@@ -1,3 +1,5 @@
+TOFU ?= tofu
+
 default: fmt lint install generate
 
 build:
@@ -10,7 +12,7 @@ lint:
 	golangci-lint run
 
 generate:
-	cd tools; go generate ./...
+	TOFU="$(TOFU)" go -C tools generate ./...
 
 fmt:
 	gofmt -s -w -e .
@@ -19,6 +21,6 @@ test:
 	go test -v -cover -timeout=120s -parallel=10 ./...
 
 testacc:
-	TF_ACC=1 go test -v -cover -timeout 120m ./...
+	TOFU="$(TOFU)" TF_ACC=1 go test -v -cover -timeout 120m ./...
 
 .PHONY: fmt lint test testacc build install generate

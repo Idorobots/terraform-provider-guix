@@ -1,0 +1,37 @@
+(use-modules (gnu) (guix gexp)
+             (gnu services avahi)
+             (gnu services networking)
+             (gnu services ssh))
+
+(operating-system
+  (host-name "${hostname}")
+  (timezone "Etc/UTC")
+  (locale "en_US.utf8")
+  (bootloader
+    (bootloader-configuration
+      (bootloader grub-efi-bootloader)
+      (targets '("/boot/efi"))))
+  (file-systems
+    (cons* (file-system
+             (mount-point "/")
+             (device (file-system-label "Guix_image"))
+             (type "ext4"))
+           (file-system
+             (mount-point "/boot/efi")
+             (device (file-system-label "GNU-ESP"))
+             (type "vfat"))
+           %base-file-systems))
+  (services
+    (append
+      (list
+        (service dhcp-client-service-type)
+        (service avahi-service-type)
+        (service openssh-service-type
+          (openssh-configuration
+            (permit-root-login 'prohibit-password)
+            (authorized-keys
+              `(("root" ,(local-file "management.pub"))))))
+        (simple-service 'controller-address etc-service-type
+          (list `("controller-address"
+                   ,(plain-file "controller-address" "${controller_address}\n")))))
+      %base-services)))

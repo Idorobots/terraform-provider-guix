@@ -1,3 +1,3 @@
-provider "scaffolding" {
-  # example configuration here
+provider "guix" {
+  artifact_directory = "${path.root}/.guix-artifacts"
 }

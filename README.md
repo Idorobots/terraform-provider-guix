@@ -1,64 +1,176 @@
-# Terraform Provider Scaffolding (Terraform Plugin Framework)
+# Guix Provider for OpenTofu
 
-_This template repository is built on the [Terraform Plugin Framework](https://github.com/hashicorp/terraform-plugin-framework). The template repository built on the [Terraform Plugin SDK](https://github.com/hashicorp/terraform-plugin-sdk) can be found at [terraform-provider-scaffolding](https://github.com/hashicorp/terraform-provider-scaffolding). See [Which SDK Should I Use?](https://developer.hashicorp.com/terraform/plugin/framework-benefits) in the Terraform documentation for additional information._
+`SpartanWorks/guix` builds Guix System images and manages manually commissioned
+machines using mDNS discovery and pinned `guix deploy` operations. OpenTofu is
+the default CLI for development, documentation generation, and deployment.
 
-This repository is a *template* for a [Terraform](https://www.terraform.io) provider. It is intended as a starting point for creating Terraform providers, containing:
-
-- A resource and a data source (`internal/provider/`),
-- Examples (`examples/`) and generated documentation (`docs/`),
-- Miscellaneous meta files.
-
-These files contain boilerplate code that you will need to edit to create your own Terraform provider. Tutorials for creating Terraform providers can be found on the [HashiCorp Developer](https://developer.hashicorp.com/terraform/tutorials/providers-plugin-framework) platform. _Terraform Plugin Framework specific guides are titled accordingly._
-
-Please see the [GitHub template repository documentation](https://help.github.com/en/github/creating-cloning-and-archiving-repositories/creating-a-repository-from-a-template) for how to create a new repository from this template on GitHub.
-
-Once you've written your provider, you'll want to [publish it on the Terraform Registry](https://developer.hashicorp.com/terraform/registry/providers/publishing) so that others can use it.
+| Resource | Purpose |
+| --- | --- |
+| [`guix_image`](docs/resources/image.md) | Build an immutable bootable image and retain it with an independent Guix GC root |
+| [`guix_host`](docs/resources/host.md) | Discover a running installation, expose its IPv4 address, and reconcile its configuration |
+| [`guix_key_pair`](docs/resources/key_pair.md) | Name and normalize a management public key for Guix SSH authorization |
 
 ## Requirements
 
-- [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.0
-- [Go](https://golang.org/doc/install) >= 1.24
+- A **Linux** runner with OpenTofu >= 1.6 (tested with 1.13.2).
+- Guix installed on the runner, a working Guix daemon, and access to the pinned
+  channels and their build dependencies. Guix 1.5 is the initial integration target.
+- `avahi-resolve-host-name`, a running Avahi daemon and D-Bus, and multicast
+  connectivity to the hosts. A container needs access to these services and the
+  local multicast network; installing the CLI alone is insufficient.
+- Each host runs Guix System with DHCP/network access, Avahi, OpenSSH, and the
+  management public key authorized. Pin its SSH **host** public key separately.
+- The deployment user is root or has passwordless sudo. Management private keys
+  must be unencrypted, supplied as `ssh.private_key` or `ssh.identity_file`.
 
-## Building the Provider
+## Workflow
 
-1. Clone the repository
-1. Enter the repository directory
-1. Build the provider using the Go `install` command:
+1. Supply Scheme source using `file()` or `templatefile()`, and pin channels to
+   commits (for example, `guix describe -f channels > channels-lock.scm`).
+2. Apply an image and host configuration with `tofu apply`. OpenTofu builds the image and then
+   waits for the host to appear.
+3. While the apply is waiting, find the image GC root under
+   `.guix-artifacts/<name>/<image-id>/image` (or the configured `artifact_directory`).
+   Inspect `ls -l .guix-artifacts/controller/*/image` in another terminal, manually flash the
+   appropriate image to the intended disk, and boot the host.
+4. The provider discovers `<hostname>.local`, verifies the pinned SSH host key,
+   builds the desired system, and deploys if the installed system differs.
+5. A dependent image can consume `guix_host.controller.ipv4_address`. OpenTofu
+   delays that image build until the controller is ready, all within one apply.
+
+The complete [two-host example](examples/two-hosts) combines `tls_private_key`,
+Guix SSH authorization, image builds, and an IP-dependent worker configuration.
+
+### Lifecycle and state
+
+- **Images are immutable.** Source, channels, supporting files, image type, or
+  target-system changes replace the image resource. Image bytes live in the Guix
+  store; OpenTofu state contains paths, the checksum and source digest.
+- Each image resource owns a distinct GC-root symlink, even when Guix deduplicates
+  identical images. Destroy removes only that reference. A missing artifact/root
+  is detected during refresh and rebuilt on the next apply. Keep the artifact
+  directory on persistent storage accessible to the runner. GC roots do not copy
+  images to other runners or artifact stores.
+- **An offline host is absent.** After the read timeout (default 30 seconds), an
+  unreachable host is removed from state. The next apply waits for it again and
+  reconciles it. Authentication errors, host-key mismatches, malformed responses,
+  cancellation, and discovery-tool failures return errors and preserve state.
+- Changes to a host configuration use `guix deploy`; changes to
+  `bootstrap_image` establish ordering/provenance and never flash disks.
+- Refresh records both the observed system and the last successful deployment.
+  An out-of-band rollback schedules reconciliation on the next apply.
+- Destroying a host only forgets it. It does not shut down, wipe, or uninstall it.
+- An interrupted create can be retried: it inspects the existing installation and
+  deploys only when needed. Failed updates retain the prior successful state.
+
+### Management keys and host identity
+
+`guix_key_pair` takes an OpenSSH **public** key, such as
+`tls_private_key.management.public_key_openssh`. Its `authorized_key` output is
+passed into a Guix source bundle for `openssh-configuration`'s `authorized-keys`.
+The matching private key authenticates management connections. Deleting or
+rotating the logical key resource changes host authorization when the consuming
+Guix configurations are subsequently deployed.
+
+`ssh.host_key` is the server's own OpenSSH public key. Obtain it through a trusted
+commissioning channel, or provision the corresponding host identity separately.
+It is verified by both inspection and Guix deployment. Management keys do not
+substitute for server identity. Host private-key provisioning is an operator
+commissioning step; this provider does not place host private keys in Guix store
+objects. `tls_private_key` and `ssh.private_key` values are stored in OpenTofu
+state; use a suitably protected state backend. Temporary deployment identity files
+are mode 0600 and removed after the operation.
+
+### Source bundles
+
+`configuration` must evaluate to a Guix `operating-system` object. `source_files`
+maps relative paths to contents, so changes to imported Scheme modules and local
+assets participate in OpenTofu planning. The provider creates an isolated
+workspace and adds it to the Guix load path. Relative assets should use Guix
+`local-file`. All needed files must be included explicitly; paths outside the
+bundle are not automatically tracked. The top-level names `configuration.scm`,
+`channels.scm`, `machines.scm`, and `identity` are reserved. Pin every channel to a
+commit to make builds and deployments reproducible.
+
+### Import
+
+Configure provider-level SSH credentials and the host's pinned key, then run:
 
 ```shell
-go install
+tofu import guix_host.controller controller.local
 ```
 
-## Adding Dependencies
+The host must be reachable. Import adopts its observed system. Add the desired
+configuration and channels in HCL before updating; they are optional in the
+imported state but required for create/update. Image artifacts and logical key
+pairs are created from configuration rather than imported.
 
-This provider uses [Go modules](https://github.com/golang/go/wiki/Modules).
-Please see the Go documentation for the most up to date information about using Go modules.
+## Development
 
-To add a new dependency `github.com/author/dependency` to your Terraform provider:
-
-```shell
-go get github.com/author/dependency
-go mod tidy
-```
-
-Then commit the changes to `go.mod` and `go.sum`.
-
-## Using the Provider
-
-Fill this in for each provider
-
-## Developing the Provider
-
-If you wish to work on the provider, you'll first need [Go](http://www.golang.org) installed on your machine (see [Requirements](#requirements) above).
-
-To compile the provider, run `go install`. This will build the provider and put the provider binary in the `$GOPATH/bin` directory.
-
-To generate or update documentation, run `make generate`.
-
-In order to run the full suite of Acceptance tests, run `make testacc`.
-
-*Note:* Acceptance tests create real resources, and often cost money to run.
+Use Go >= 1.25.8 and install `tofu` on PATH. This repository uses the Terraform
+Plugin Framework and the standard provider protocol, which OpenTofu supports.
 
 ```shell
+go install .
+go test ./...
 make testacc
+go vet ./...
+make generate
 ```
+
+Acceptance tests run the real OpenTofu CLI against deterministic, injected
+Guix/discovery/SSH backends; they need no hardware or Guix daemon. Tests cover
+delayed discovery, import, in-place deployment, rollback drift, IP-dependent
+image replacement, offline semantics, key-pair integration, cancellation, and
+independent image ownership. Both `make testacc` and direct
+`TF_ACC=1 go test ./internal/provider` invocations default to `tofu` and
+`registry.opentofu.org/spartanworks/guix`. Set `TOFU=/absolute/path/to/tofu` to use
+a different OpenTofu binary. Documentation generation also honors `TOFU` and
+exports the schema with OpenTofu; it does not require or download Terraform.
+
+The upstream test library retains its `TF_ACC_*` environment variable names.
+To run the Terraform compatibility check explicitly, set both the CLI path and
+registry hostname:
+
+```shell
+TF_ACC=1 TF_ACC_TERRAFORM_PATH=/absolute/path/to/terraform \
+  TF_ACC_PROVIDER_HOST=registry.terraform.io go test ./internal/provider
+```
+
+CI runs OpenTofu 1.13.2 as the primary CLI and Terraform 1.13.5 as a compatibility
+check. The HCL `terraform { ... }` block and `terraform-provider-guix` binary name
+are retained because OpenTofu uses the same configuration and provider conventions.
+
+To exercise actual Guix builds against your own configuration, see
+[`internal/guix/integration_test.go`](internal/guix/integration_test.go). Real-host
+SSH checks are opt-in in [`internal/remote/ssh_test.go`](internal/remote/ssh_test.go).
+
+For local OpenTofu development, configure a CLI development override in a
+`.tofurc` file. Use the directory reported by `go env GOBIN`; if that is empty,
+use the absolute path printed by `go env GOPATH`, followed by `/bin`:
+
+```hcl
+provider_installation {
+  dev_overrides {
+    "registry.opentofu.org/spartanworks/guix" = "/absolute/path/to/go/bin"
+  }
+  direct {}
+}
+```
+
+Set `TF_CLI_CONFIG_FILE` to that file. The development override loads the local
+binary when running `tofu plan`/`tofu apply`; it does not publish the provider to
+the registry. Initialize other providers (such as `hashicorp/tls`) separately if
+needed while this provider is unpublished.
+
+## Architecture
+
+- `internal/provider`: provider schemas and lifecycles.
+- `internal/guix`: pinned commands, source isolation, image retention, deployment.
+- `internal/discovery`: a small `Resolver` interface with an Avahi implementation.
+- `internal/remote`: native Go SSH inspection with pinned host keys.
+
+Replacing Avahi with native Go mDNS requires implementing `Resolver.Resolve` and
+changing client construction, without altering resource lifecycles or HCL.
+Discovery backends return `discovery.ErrUnavailable` for reachability failures and
+ordinary errors for broken tooling or malformed responses.
