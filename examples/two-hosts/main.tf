@@ -79,6 +79,13 @@ resource "guix_host" "worker" {
   }
 }
 
+output "management_key" {
+  value = {
+    public_key  = guix_key_pair.management.authorized_key
+    fingerprint = guix_key_pair.management.fingerprint
+  }
+}
+
 output "addresses" {
   value = {
     controller = guix_host.controller.ipv4_address
