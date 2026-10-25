@@ -37,9 +37,12 @@ func (a Avahi) Resolve(ctx context.Context, hostname string) (string, error) {
 		if errors.As(err, &missing) {
 			return "", fmt.Errorf("Avahi is not installed: %w", err)
 		}
-		if ctx.Err() != nil || strings.Contains(stderr, "Timeout reached") || strings.Contains(stderr, "DNS failure: NXDOMAIN") {
-			return "", fmt.Errorf("%w: %s", ErrUnavailable, hostname)
-		}
+	}
+	// avahi-resolve can report resolution failure on stderr while exiting zero.
+	if ctx.Err() != nil || strings.Contains(stderr, "Timeout reached") || strings.Contains(stderr, "DNS failure: NXDOMAIN") {
+		return "", fmt.Errorf("%w: %s", ErrUnavailable, hostname)
+	}
+	if err != nil {
 		return "", fmt.Errorf("Avahi discovery failed: %w: %s", err, stderr)
 	}
 	fields := strings.Fields(out)
