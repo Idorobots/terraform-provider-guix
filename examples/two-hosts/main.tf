@@ -55,11 +55,8 @@ resource "guix_image" "controller" {
 }
 
 resource "guix_host" "controller" {
-  hostname        = "controller.local"
-  bootstrap_image = guix_image.controller.id
-  configuration   = local.controller_configuration
-  channels        = local.channels
-  source_files    = local.sources
+  hostname = "controller.local"
+  image    = guix_image.controller
   ssh = {
     host_key    = var.host_public_keys.controller
     private_key = tls_private_key.management.private_key_openssh
@@ -74,11 +71,8 @@ resource "guix_image" "worker" {
 }
 
 resource "guix_host" "worker" {
-  hostname        = "worker.local"
-  bootstrap_image = guix_image.worker.id
-  configuration   = local.worker_configuration
-  channels        = local.channels
-  source_files    = local.sources
+  hostname = "worker.local"
+  image    = guix_image.worker
   ssh = {
     host_key    = var.host_public_keys.worker
     private_key = tls_private_key.management.private_key_openssh

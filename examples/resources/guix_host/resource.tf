@@ -1,12 +1,6 @@
 resource "guix_host" "server" {
-  hostname        = "server.local"
-  bootstrap_image = guix_image.server.id
-  configuration   = file("${path.module}/system.scm")
-  channels        = file("${path.module}/channels-lock.scm")
-
-  source_files = {
-    "management.pub" = guix_key_pair.management.authorized_key
-  }
+  hostname = "server.local"
+  image    = guix_image.server
 
   ssh = {
     user        = "root"

@@ -41,6 +41,23 @@ the default CLI for development, documentation generation, and deployment.
 The complete [two-host example](examples/two-hosts) combines `tls_private_key`,
 Guix SSH authorization, image builds, and an IP-dependent worker configuration.
 
+Plans for new hosts print a `Manual commissioning required` warning in the normal
+console output, including during the planning phase of `tofu apply`. Set
+`image = guix_image.<name>` on the host to include the image file to flash.
+If the image has not been built yet, the warning explains that its path is known
+after the build; use the GC-root location described above.
+No logging environment variable is required. Existing-host updates and destroy
+plans do not emit this create-time warning.
+
+The required `image = guix_image.<name>` object is the host's sole system-definition
+input. It supplies the configuration, pinned channels, target architecture,
+supporting files, image identity, and commissioning path. Update those values on
+the image resource to change the desired host system. Image changes reconcile the
+host in place.
+
+During apply, the provider also logs the image path and manual flashing/boot
+instructions at INFO level (`TF_LOG_PROVIDER=INFO`), once the image path is known.
+
 ### Lifecycle and state
 
 - **Images are immutable.** Source, channels, supporting files, image type, or
@@ -55,8 +72,9 @@ Guix SSH authorization, image builds, and an IP-dependent worker configuration.
   unreachable host is removed from state. The next apply waits for it again and
   reconciles it. Authentication errors, host-key mismatches, malformed responses,
   cancellation, and discovery-tool failures return errors and preserve state.
-- Changes to a host configuration use `guix deploy`; changes to
-  `bootstrap_image` establish ordering/provenance and never flash disks.
+- Changes to the host's `image` definition use
+  `guix deploy`. Image references establish ordering/provenance and never flash
+  disks.
 - Refresh records both the observed system and the last successful deployment.
   An out-of-band rollback schedules reconciliation on the next apply.
 - Destroying a host only forgets it. It does not shut down, wipe, or uninstall it.
@@ -100,10 +118,11 @@ Configure provider-level SSH credentials and the host's pinned key, then run:
 tofu import guix_host.controller controller.local
 ```
 
-The host must be reachable. Import adopts its observed system. Add the desired
-configuration and channels in HCL before updating; they are optional in the
-imported state but required for create/update. Image artifacts and logical key
-pairs are created from configuration rather than imported.
+The host must be reachable. Configure the required `image = guix_image.<name>`
+object in the host block. Import adopts the observed system but does not infer
+which image defines it; the image object is populated from configuration on the
+next apply. Image artifacts and logical key pairs are created from configuration
+rather than imported.
 
 ## Development
 

@@ -30,11 +30,7 @@ type HostResource struct{ client *Client }
 type HostModel struct {
 	ID                 types.String `tfsdk:"id"`
 	Hostname           types.String `tfsdk:"hostname"`
-	Configuration      types.String `tfsdk:"configuration"`
-	Channels           types.String `tfsdk:"channels"`
-	System             types.String `tfsdk:"system"`
-	SourceFiles        types.Map    `tfsdk:"source_files"`
-	BootstrapImage     types.String `tfsdk:"bootstrap_image"`
+	Image              types.Object `tfsdk:"image"`
 	SSH                types.Object `tfsdk:"ssh"`
 	Timeouts           types.Object `tfsdk:"timeouts"`
 	IPv4               types.String `tfsdk:"ipv4_address"`
@@ -54,10 +50,10 @@ func (*HostResource) Metadata(_ context.Context, req resource.MetadataRequest, r
 	resp.TypeName = req.ProviderTypeName + "_host"
 }
 func (*HostResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
-	attrs := sourceSchema(false)
+	attrs := map[string]schema.Attribute{}
+	attrs["image"] = hostImageSchema()
 	attrs["id"] = computedString("Stable hostname-based identity.", true)
 	attrs["hostname"] = schema.StringAttribute{Required: true, MarkdownDescription: "mDNS hostname ending in .local. Changing it replaces the tracked host.", Validators: []validator.String{stringCheck("mDNS hostname ending in .local")}, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}}
-	attrs["bootstrap_image"] = schema.StringAttribute{Optional: true, MarkdownDescription: "Image resource ID establishing bootstrap ordering and provenance. Changes deploy in place and never flash disks."}
 	attrs["ssh"] = sshSchema()
 	attrs["timeouts"] = schema.SingleNestedAttribute{Optional: true, MarkdownDescription: "Operation deadlines. Defaults: create 45m, read 30s, update 30m. An unreachable host is absent after the read deadline.", Attributes: map[string]schema.Attribute{
 		"create": schema.StringAttribute{Optional: true, MarkdownDescription: "Commissioning and initial reconciliation timeout.", Validators: []validator.String{stringCheck("positive duration")}},
@@ -140,7 +136,9 @@ func (r *HostResource) wait(ctx context.Context, hostname string, d guix.Destina
 
 func (r *HostResource) reconcile(ctx context.Context, model *HostModel, operation string) diag.Diagnostics {
 	d, diagnostics := destination(ctx, model.SSH, r.client.SSH)
-	s, sourceDiagnostics := source(ctx, model.Configuration, model.Channels, model.System, model.SourceFiles)
+	image, imageDiagnostics := readHostImage(ctx, model.Image)
+	diagnostics.Append(imageDiagnostics...)
+	s, sourceDiagnostics := source(ctx, image.Configuration, image.Channels, image.System, image.SourceFiles)
 	diagnostics.Append(sourceDiagnostics...)
 	duration, timeoutDiagnostics := hostTimeout(ctx, model.Timeouts, operation)
 	diagnostics.Append(timeoutDiagnostics...)
@@ -149,7 +147,11 @@ func (r *HostResource) reconcile(ctx context.Context, model *HostModel, operatio
 	}
 	ctx, cancel := context.WithTimeout(ctx, duration)
 	defer cancel()
-	tflog.Info(ctx, "Waiting for manually commissioned Guix host", map[string]any{"hostname": model.Hostname.ValueString()})
+	tflog.Info(ctx, "Waiting for manually commissioned Guix host", map[string]any{
+		"hostname": model.Hostname.ValueString(), "image_id": image.ID.ValueString(),
+		"image_path": image.ArtifactPath.ValueString(), "instructions": commissioningImageInstruction(image.ArtifactPath),
+		"timeout": duration.String(),
+	})
 	d, observed, err := r.wait(ctx, model.Hostname.ValueString(), d, "")
 	if err != nil {
 		diagnostics.AddError("Guix host unavailable", err.Error())
@@ -234,7 +236,26 @@ func (r *HostResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
 }
 func (*HostResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.Plan.Raw.IsNull() || req.State.Raw.IsNull() {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var model HostModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &model)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	image, diagnostics := readHostImage(ctx, model.Image)
+	resp.Diagnostics.Append(diagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if req.State.Raw.IsNull() {
+		instruction := commissioningImageInstruction(image.ArtifactPath)
+		target := "the configured .local hostname"
+		if !model.Hostname.IsNull() && !model.Hostname.IsUnknown() {
+			target = fmt.Sprintf("%q", model.Hostname.ValueString())
+		}
+		resp.Diagnostics.AddWarning("Manual commissioning required", instruction+"\n\nEnsure "+target+" is discoverable over mDNS and accepts SSH with the configured management key and pinned host key. Apply waits for this host until the create timeout, then reconciles its Guix system.")
 		return
 	}
 	var observed, deployed types.String
@@ -258,5 +279,4 @@ func (*HostResource) ImportState(ctx context.Context, req resource.ImportStateRe
 	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("hostname"), req.ID)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("system"), "x86_64-linux")...)
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	testresource "github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"golang.org/x/crypto/ssh"
 )
@@ -162,7 +163,8 @@ func hostState(t *testing.T, r *HostResource) tfsdk.State {
 		t.Fatal("SSH schema is not an object")
 	}
 	model := HostModel{
-		ID: types.StringValue("node.local"), Hostname: types.StringValue("node.local"), Configuration: types.StringValue("desired"), Channels: types.StringValue("pinned"), System: types.StringValue("x86_64-linux"), SourceFiles: types.MapNull(types.StringType),
+		Image: testHostImage(t),
+		ID:    types.StringValue("node.local"), Hostname: types.StringValue("node.local"),
 		SSH:      types.ObjectNull(sshType.AttrTypes),
 		Timeouts: types.ObjectValueMust(map[string]attr.Type{"create": types.StringType, "read": types.StringType, "update": types.StringType}, map[string]attr.Value{"create": types.StringNull(), "read": types.StringValue("5ms"), "update": types.StringNull()}),
 		IPv4:     types.StringValue("192.0.2.1"), SystemPath: types.StringValue("old"), DeployedSystem: types.StringValue("desired"), DeploymentRevision: types.StringValue("digest"),
@@ -217,8 +219,13 @@ provider "guix" {
 }
 resource "guix_host" "controller" {
   hostname = "controller.local"
-  configuration = %q
-  channels = "pinned"
+  image = {
+    id = "controller-image"
+    artifact_path = "/tmp/controller.img"
+    configuration = %q
+    channels = "pinned"
+    system = "x86_64-linux"
+  }
 }
 resource "guix_image" "worker" {
   configuration = guix_host.controller.ipv4_address
@@ -238,7 +245,7 @@ resource "guix_image" "worker" {
 	}
 	testresource.Test(t, testresource.TestCase{ProtoV6ProviderFactories: factories(client), Steps: []testresource.TestStep{
 		{Config: config("v1"), Check: testresource.ComposeTestCheckFunc(testresource.TestCheckResourceAttr("guix_host.controller", "ipv4_address", "192.0.2.1"), check(1, 1))},
-		{ResourceName: "guix_host.controller", ImportState: true, ImportStateId: "controller.local", ImportStateVerify: true, ImportStateVerifyIgnore: []string{"configuration", "channels", "deployment_revision"}},
+		{ResourceName: "guix_host.controller", ImportState: true, ImportStateId: "controller.local", ImportStateVerify: true, ImportStateVerifyIgnore: []string{"image", "deployment_revision"}},
 		{PreConfig: func() { backend.mu.Lock(); backend.addressAfterDeploy = "192.0.2.4"; backend.mu.Unlock() }, Config: config("v2"), Check: testresource.ComposeTestCheckFunc(testresource.TestCheckResourceAttr("guix_host.controller", "ipv4_address", "192.0.2.4"), check(2, 2))},
 		{PreConfig: func() {
 			backend.mu.Lock()
@@ -266,8 +273,13 @@ func TestAccInterruptedHostCreate(t *testing.T) {
 }
 resource "guix_host" "server" {
   hostname = "server.local"
-  configuration = "desired"
-  channels = "pinned"
+  image = {
+    id = "server-image"
+    artifact_path = "/tmp/server.img"
+    configuration = "desired"
+    channels = "pinned"
+    system = "x86_64-linux"
+  }
 }`
 	testresource.Test(t, testresource.TestCase{ProtoV6ProviderFactories: factories(client), Steps: []testresource.TestStep{
 		{Config: config, ExpectError: regexp.MustCompile("connection lost after activation")},
@@ -279,6 +291,53 @@ resource "guix_host" "server" {
 			}
 			return nil
 		}},
+	}})
+}
+
+func TestAccHostImageLifecycle(t *testing.T) {
+	client, backend := fakeClient(t)
+	config := func(imageConfiguration, system string) string {
+		return fmt.Sprintf(`
+provider "guix" {
+  artifact_directory = %q
+  ssh = { host_key = "fake host key", private_key = "fake management key" }
+}
+resource "guix_image" "bootstrap" {
+  configuration = %q
+  channels = "pinned"
+  system = %q
+  source_files = { asset = "image asset" }
+}
+resource "guix_host" "server" {
+  hostname = "server.local"
+  image = guix_image.bootstrap
+}
+`, client.ArtifactDirectory, imageConfiguration, system)
+	}
+	check := func(configuration, channels, system string, files map[string]string, builds, deployments int) testresource.TestCheckFunc {
+		return func(state *terraform.State) error {
+			host := state.RootModule().Resources["guix_host.server"].Primary.Attributes
+			image := state.RootModule().Resources["guix_image.bootstrap"].Primary.Attributes
+			want := desired(guix.Source{Configuration: configuration, Channels: channels, System: system, Files: files})
+			if host["id"] != "server.local" || host["image.system"] != system || host["deployed_system"] != want || host["image.id"] != image["id"] || host["image.artifact_path"] != image["artifact_path"] {
+				return fmt.Errorf("unexpected host image state: %v; desired system %s", host, want)
+			}
+			backend.mu.Lock()
+			defer backend.mu.Unlock()
+			if backend.builds != builds || backend.deployments != deployments {
+				return fmt.Errorf("builds=%d deployments=%d; want %d %d", backend.builds, backend.deployments, builds, deployments)
+			}
+			return nil
+		}
+	}
+	testresource.Test(t, testresource.TestCase{ProtoV6ProviderFactories: factories(client), Steps: []testresource.TestStep{
+		{Config: config("image-v1", "aarch64-linux"), Check: check("image-v1", "pinned", "aarch64-linux", map[string]string{"asset": "image asset"}, 1, 1)},
+		{Config: config("image-v2", "riscv64-linux"), ConfigPlanChecks: testresource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+			plancheck.ExpectResourceAction("guix_host.server", plancheck.ResourceActionUpdate),
+		}}, Check: check("image-v2", "pinned", "riscv64-linux", map[string]string{"asset": "image asset"}, 2, 2)},
+		{Config: config("image-v3", "aarch64-linux"), ConfigPlanChecks: testresource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+			plancheck.ExpectResourceAction("guix_host.server", plancheck.ResourceActionUpdate),
+		}}, Check: check("image-v3", "pinned", "aarch64-linux", map[string]string{"asset": "image asset"}, 3, 3)},
 	}})
 }
 

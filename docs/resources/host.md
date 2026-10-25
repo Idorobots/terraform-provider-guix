@@ -14,14 +14,8 @@ A reachable Guix installation discovered via mDNS. Create waits for manual flash
 
 ```terraform
 resource "guix_host" "server" {
-  hostname        = "server.local"
-  bootstrap_image = guix_image.server.id
-  configuration   = file("${path.module}/system.scm")
-  channels        = file("${path.module}/channels-lock.scm")
-
-  source_files = {
-    "management.pub" = guix_key_pair.management.authorized_key
-  }
+  hostname = "server.local"
+  image    = guix_image.server
 
   ssh = {
     user        = "root"
@@ -43,15 +37,11 @@ resource "guix_host" "server" {
 ### Required
 
 - `hostname` (String) mDNS hostname ending in .local. Changing it replaces the tracked host.
+- `image` (Attributes) Guix image object, normally guix_image.<name>. Defines the host's configuration, channels, target system, supporting files, image identity and manual commissioning file path. Image changes reconcile the host in place. (see [below for nested schema](#nestedatt--image))
 
 ### Optional
 
-- `bootstrap_image` (String) Image resource ID establishing bootstrap ordering and provenance. Changes deploy in place and never flash disks.
-- `channels` (String) Pinned channels Scheme source, normally produced by guix describe -f channels. Used with guix time-machine.
-- `configuration` (String) Guix operating-system expression as Scheme source. Use file() or templatefile() so OpenTofu tracks changes.
-- `source_files` (Map of String) Supporting files keyed by relative path, including Scheme modules and local assets. Provider filenames and path traversal are rejected.
 - `ssh` (Attributes) SSH settings overriding the provider defaults. Management private keys authenticate connections; host_key pins the server identity. (see [below for nested schema](#nestedatt--ssh))
-- `system` (String) Guix target system.
 - `timeouts` (Attributes) Operation deadlines. Defaults: create 45m, read 30s, update 30m. An unreachable host is absent after the read deadline. (see [below for nested schema](#nestedatt--timeouts))
 
 ### Read-Only
@@ -61,6 +51,22 @@ resource "guix_host" "server" {
 - `id` (String) Stable hostname-based identity.
 - `ipv4_address` (String) Currently discovered IPv4 address. Unknown during configuration changes because deployment can change networking.
 - `system_path` (String) Currently observed /run/current-system store path.
+
+<a id="nestedatt--image"></a>
+### Nested Schema for `image`
+
+Required:
+
+- `artifact_path` (String) Image file for manual flashing and booting.
+- `channels` (String) Pinned channels Scheme source.
+- `configuration` (String) Host operating-system Scheme source.
+- `id` (String) Image resource identity.
+- `system` (String) Host target architecture.
+
+Optional:
+
+- `source_files` (Map of String) Supporting source files.
+
 
 <a id="nestedatt--ssh"></a>
 ### Nested Schema for `ssh`
