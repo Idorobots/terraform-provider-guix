@@ -91,8 +91,8 @@ func workspace(s Source) (string, error) {
 	return dir, nil
 }
 
-func (c Client) invoke(ctx context.Context, dir string, args ...string) (string, error) {
-	prefix := []string{"time-machine", "-C", filepath.Join(dir, "channels.scm"), "--", "-L", dir}
+func (c Client) invoke(ctx context.Context, dir, command string, args ...string) (string, error) {
+	prefix := []string{"time-machine", "-C", filepath.Join(dir, "channels.scm"), "--", command, "-L", dir}
 	return run(ctx, c.Runner, dir, "guix", append(prefix, args...)...)
 }
 

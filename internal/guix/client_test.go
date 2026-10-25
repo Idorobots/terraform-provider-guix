@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func (r *recordingRunner) Run(_ context.Context, dir, binary string, args ...str
 	if contents, err := os.ReadFile(filepath.Join(dir, "modules", "example.scm")); err != nil || string(contents) != "module" {
 		r.t.Fatalf("missing source bundle: %q %v", contents, err)
 	}
-	if args[len(args)-2] == "deploy" {
+	if args[4] == "deploy" {
 		contents, err := os.ReadFile(filepath.Join(dir, "machines.scm"))
 		if err != nil {
 			r.t.Fatal(err)
@@ -38,6 +39,54 @@ func (r *recordingRunner) Run(_ context.Context, dir, binary string, args ...str
 		}
 	}
 	return "/gnu/store/00000000000000000000000000000000-system\n", "diagnostics stay off stdout", nil
+}
+
+type runnerFunc func(context.Context, string, string, ...string) (string, string, error)
+
+func (f runnerFunc) Run(ctx context.Context, dir, binary string, args ...string) (string, string, error) {
+	return f(ctx, dir, binary, args...)
+}
+
+func TestGuixSubcommandLoadPath(t *testing.T) {
+	source := Source{Configuration: "(operating-system)", Channels: "pinned", System: "x86_64-linux"}
+	stopped := errors.New("stop before executing Guix")
+	tests := []struct {
+		name    string
+		command string
+		action  string
+		invoke  func(Client) error
+	}{
+		{"image", "system", "image", func(c Client) error {
+			_, _, err := c.BuildImage(t.Context(), source, "mbr-raw", filepath.Join(t.TempDir(), "image"))
+			return err
+		}},
+		{"build", "system", "build", func(c Client) error {
+			_, err := c.BuildSystem(t.Context(), source)
+			return err
+		}},
+		{"deploy", "deploy", "", func(c Client) error {
+			return c.Deploy(t.Context(), source, Destination{IdentityFile: "/tmp/identity"})
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			runner := runnerFunc(func(_ context.Context, dir, binary string, args ...string) (string, string, error) {
+				called = true
+				want := []string{"time-machine", "-C", filepath.Join(dir, "channels.scm"), "--", tt.command, "-L", dir}
+				if tt.action != "" {
+					want = append(want, tt.action)
+				}
+				if binary != "guix" || len(args) < len(want) || !slices.Equal(args[:len(want)], want) {
+					t.Fatalf("invalid Guix command: %s %v; want guix %v ...", binary, args, want)
+				}
+				return "", "", stopped
+			})
+			if err := tt.invoke(Client{Runner: runner}); !called || !errors.Is(err, stopped) {
+				t.Fatalf("command was not checked or runner error was lost: called=%t err=%v", called, err)
+			}
+		})
+	}
 }
 
 func TestPinnedDeploymentAndWorkspaceCleanup(t *testing.T) {
