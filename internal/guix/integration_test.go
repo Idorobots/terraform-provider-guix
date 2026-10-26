@@ -20,8 +20,10 @@ import (
 //
 // Optional: GUIX_TEST_SOURCE_FILES is a JSON file mapping relative names to source
 // contents. GUIX_TEST_SYSTEM and GUIX_TEST_IMAGE_TYPE default to x86_64-linux and
-// efi-raw. For real deployment, also set GUIX_TEST_DEPLOY_ADDRESS,
-// GUIX_TEST_HOST_KEY, and GUIX_TEST_IDENTITY_FILE (root SSH on port 22).
+// efi-raw. GUIX_TEST_TARGET optionally sets the image cross-compilation triplet.
+// System builds still require a native or offloaded builder. For real deployment,
+// also set GUIX_TEST_DEPLOY_ADDRESS, GUIX_TEST_HOST_KEY, and
+// GUIX_TEST_IDENTITY_FILE (root SSH on port 22).
 // Custom image types and platforms must be exported by channels pinned in
 // GUIX_TEST_CHANNELS, using Guix's standard discovery module layout.
 func TestIntegrationGuix(t *testing.T) {
@@ -55,7 +57,7 @@ func TestIntegrationGuix(t *testing.T) {
 	}
 	client := guix.Client{Runner: guix.ExecRunner{}}
 	root := filepath.Join(t.TempDir(), "image")
-	store, checksum, err := client.BuildImage(t.Context(), source, imageType, root)
+	store, checksum, err := client.BuildImage(t.Context(), source, imageType, os.Getenv("GUIX_TEST_TARGET"), root)
 	if err != nil {
 		t.Fatal(err)
 	}

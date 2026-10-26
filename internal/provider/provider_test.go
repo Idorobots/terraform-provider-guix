@@ -110,11 +110,11 @@ func (f *fakeBackend) Deploy(_ context.Context, s guix.Source, _ guix.Destinatio
 	f.deploymentError = nil
 	return err
 }
-func (f *fakeBackend) BuildImage(ctx context.Context, s guix.Source, _ string, root string) (string, string, error) {
+func (f *fakeBackend) BuildImage(ctx context.Context, s guix.Source, _, target, root string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.builds++
-	image := filepath.Join(f.directory, "image-"+s.Digest())
+	image := filepath.Join(f.directory, "image-"+s.ImageDigest(target))
 	if err := os.WriteFile(image, []byte(s.Configuration), 0600); err != nil {
 		return "", "", err
 	}
@@ -302,6 +302,7 @@ provider "guix" {
   artifact_directory = %q
   ssh = { host_key = "fake host key", private_key = "fake management key" }
 }
+
 resource "guix_image" "bootstrap" {
   configuration = %q
   channels = "pinned"
@@ -341,6 +342,50 @@ resource "guix_host" "server" {
 	}})
 }
 
+func TestAccImageCrossTargetLifecycle(t *testing.T) {
+	client, backend := fakeClient(t)
+	config := func(target string) string {
+		return fmt.Sprintf(`
+provider "guix" {
+  artifact_directory = %q
+  ssh = { host_key = "fake host key", private_key = "fake management key" }
+}
+resource "guix_image" "bootstrap" {
+  configuration = "system"
+  channels = "pinned"
+  system = "aarch64-linux"
+  %s
+}
+resource "guix_host" "server" {
+  hostname = "server.local"
+  image = guix_image.bootstrap
+}
+`, client.ArtifactDirectory, target)
+	}
+	check := func(target string, builds, deployments int) testresource.TestCheckFunc {
+		return func(state *terraform.State) error {
+			image := state.RootModule().Resources["guix_image.bootstrap"].Primary.Attributes
+			source := guix.Source{Configuration: "system", Channels: "pinned", System: "aarch64-linux"}
+			if image["input_digest"] != source.ImageDigest(target) {
+				return fmt.Errorf("incorrect image digest: %s", image["input_digest"])
+			}
+			backend.mu.Lock()
+			defer backend.mu.Unlock()
+			if backend.builds != builds || backend.deployments != deployments {
+				return fmt.Errorf("builds=%d deployments=%d; want %d %d", backend.builds, backend.deployments, builds, deployments)
+			}
+			return nil
+		}
+	}
+	testresource.Test(t, testresource.TestCase{ProtoV6ProviderFactories: factories(client), Steps: []testresource.TestStep{
+		{Config: config(""), Check: check("", 1, 1)},
+		{Config: config(`target = "aarch64-linux-gnu"`), ConfigPlanChecks: testresource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+			plancheck.ExpectResourceAction("guix_image.bootstrap", plancheck.ResourceActionDestroyBeforeCreate),
+		}}, Check: check("aarch64-linux-gnu", 2, 1)},
+		{Config: config(`target = "arm-linux-gnueabihf"`), Check: check("arm-linux-gnueabihf", 3, 1)},
+	}})
+}
+
 func TestAccKeyPair(t *testing.T) {
 	public, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -363,11 +408,11 @@ func TestImageRootOwnership(t *testing.T) {
 	source := guix.Source{Configuration: "same", Channels: "pinned", System: "x86_64-linux"}
 	first := filepath.Join(client.ArtifactDirectory, "11111111111111111111111111111111", "image")
 	second := filepath.Join(client.ArtifactDirectory, "22222222222222222222222222222222", "image")
-	_, _, err := backend.BuildImage(t.Context(), source, "efi-raw", first)
+	_, _, err := backend.BuildImage(t.Context(), source, "efi-raw", "", first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = backend.BuildImage(t.Context(), source, "efi-raw", second)
+	_, _, err = backend.BuildImage(t.Context(), source, "efi-raw", "", second)
 	if err != nil {
 		t.Fatal(err)
 	}

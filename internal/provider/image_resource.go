@@ -31,6 +31,7 @@ type ImageModel struct {
 	Configuration types.String `tfsdk:"configuration"`
 	Channels      types.String `tfsdk:"channels"`
 	System        types.String `tfsdk:"system"`
+	Target        types.String `tfsdk:"target"`
 	SourceFiles   types.Map    `tfsdk:"source_files"`
 	ImageType     types.String `tfsdk:"image_type"`
 	ArtifactPath  types.String `tfsdk:"artifact_path"`
@@ -49,10 +50,11 @@ func (*ImageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 	attrs["name"] = schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("image"), MarkdownDescription: "Operator-visible artifact label. Images appear under artifact_directory/<name>/<id>/image while apply waits for manual boot.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("artifact label (letters, digits, underscores and hyphens)")}}
 	attrs["id"] = computedString("Unique resource identity, owning an independent image GC root.", true)
 	attrs["image_type"] = schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("efi-raw"), MarkdownDescription: "Guix system image type, including types exported by pinned channels.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("nonempty string")}}
+	attrs["target"] = schema.StringAttribute{Optional: true, MarkdownDescription: "GNU target triplet for cross-compiling the image, for example aarch64-linux-gnu. Builds use the runner's native system; host system builds and deployments still use system.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("nonempty string")}}
 	attrs["artifact_path"] = computedString("Persistent image symlink and Guix GC root. Available under artifact_directory/<name>/<id>/image during manual commissioning.", false)
 	attrs["store_path"] = computedString("Immutable Guix store image path.", false)
 	attrs["sha256"] = computedString("SHA256 checksum of the image bytes.", false)
-	attrs["input_digest"] = computedString("Digest of the configuration, channels, target system and source files.", false)
+	attrs["input_digest"] = computedString("Digest of the configuration, channels, system, cross target and source files.", false)
 	attrs["build_timeout"] = schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("2h"), MarkdownDescription: "Image build deadline.", Validators: []validator.String{stringCheck("positive duration")}}
 	resp.Schema = schema.Schema{MarkdownDescription: "Build an immutable Guix System image with pinned channels. Flash and boot it manually; the provider retains it using a per-resource GC root. Destroy releases only that reference.", Attributes: attrs}
 }
@@ -92,13 +94,13 @@ func (r *ImageResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 	m.ID = types.StringValue(hex.EncodeToString(id))
 	root := filepath.Join(r.client.ArtifactDirectory, m.Name.ValueString(), m.ID.ValueString(), "image")
-	store, checksum, err := r.client.Guix.BuildImage(ctx, s, m.ImageType.ValueString(), root)
+	store, checksum, err := r.client.Guix.BuildImage(ctx, s, m.ImageType.ValueString(), m.Target.ValueString(), root)
 	if err != nil {
 		_ = os.Remove(root)
 		resp.Diagnostics.AddError("Guix image build failed", err.Error())
 		return
 	}
-	m.ArtifactPath, m.StorePath, m.SHA256, m.InputDigest = types.StringValue(root), types.StringValue(store), types.StringValue(checksum), types.StringValue(s.Digest())
+	m.ArtifactPath, m.StorePath, m.SHA256, m.InputDigest = types.StringValue(root), types.StringValue(store), types.StringValue(checksum), types.StringValue(s.ImageDigest(m.Target.ValueString()))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 func (*ImageResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {

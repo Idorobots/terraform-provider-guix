@@ -30,9 +30,23 @@ func (s Source) Digest() string {
 	return hex.EncodeToString(digest[:])
 }
 
+// ImageDigest includes the image-only cross target without changing existing
+// source digests for native images or host deployments.
+func (s Source) ImageDigest(target string) string {
+	if target == "" {
+		return s.Digest()
+	}
+	b, _ := json.Marshal(struct {
+		Source Source
+		Target string
+	}{s, target})
+	digest := sha256.Sum256(b)
+	return hex.EncodeToString(digest[:])
+}
+
 // Backend makes Guix operations independently testable from Terraform and SSH.
 type Backend interface {
-	BuildImage(context.Context, Source, string, string) (string, string, error)
+	BuildImage(context.Context, Source, string, string, string) (string, string, error)
 	BuildSystem(context.Context, Source) (string, error)
 	Deploy(context.Context, Source, Destination) error
 }
@@ -104,7 +118,7 @@ func storePath(output string) (string, error) {
 	return p, nil
 }
 
-func (c Client) BuildImage(ctx context.Context, source Source, imageType, root string) (string, string, error) {
+func (c Client) BuildImage(ctx context.Context, source Source, imageType, target, root string) (string, string, error) {
 	dir, err := workspace(source)
 	if err != nil {
 		return "", "", err
@@ -113,7 +127,11 @@ func (c Client) BuildImage(ctx context.Context, source Source, imageType, root s
 	if err := os.MkdirAll(filepath.Dir(root), 0700); err != nil {
 		return "", "", err
 	}
-	out, err := c.invoke(ctx, dir, "system", "image", "--image-type="+imageType, "--system="+source.System, "--root="+root, filepath.Join(dir, "configuration.scm"))
+	architecture := "--system=" + source.System
+	if target != "" {
+		architecture = "--target=" + target
+	}
+	out, err := c.invoke(ctx, dir, "system", "image", "--image-type="+imageType, architecture, "--root="+root, filepath.Join(dir, "configuration.scm"))
 	if err != nil {
 		return "", "", err
 	}

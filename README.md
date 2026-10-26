@@ -161,6 +161,17 @@ them. Changes to `channels` replace the image. Hosts using
 `image = guix_image.homelab` inherit those same channels for system builds and
 deployment.
 
+### Cross-compiling images
+
+Set `target = "aarch64-linux-gnu"` on `guix_image` to pass Guix's `--target`
+for the image build instead of `--system`. Guix builds the cross tools for the
+runner's native architecture. Keep `system = "aarch64-linux"` to identify the
+host architecture. Changing `target` replaces the image.
+
+The target applies only to image creation. Host reconciliation and `guix deploy`
+still build for `system` and require a native builder, offload, or emulation for
+that architecture.
+
 ### Import
 
 Configure provider-level SSH credentials and the host's pinned key, then run:

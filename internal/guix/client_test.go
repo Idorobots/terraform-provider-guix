@@ -57,7 +57,7 @@ func TestGuixSubcommandLoadPath(t *testing.T) {
 		invoke  func(Client) error
 	}{
 		{"image", "system", "image", func(c Client) error {
-			_, _, err := c.BuildImage(t.Context(), source, "mbr-raw", filepath.Join(t.TempDir(), "image"))
+			_, _, err := c.BuildImage(t.Context(), source, "mbr-raw", "", filepath.Join(t.TempDir(), "image"))
 			return err
 		}},
 		{"build", "system", "build", func(c Client) error {
@@ -84,6 +84,36 @@ func TestGuixSubcommandLoadPath(t *testing.T) {
 			})
 			if err := tt.invoke(Client{Runner: runner}); !called || !errors.Is(err, stopped) {
 				t.Fatalf("command was not checked or runner error was lost: called=%t err=%v", called, err)
+			}
+		})
+	}
+}
+
+func TestImageArchitectureArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name, target, want, absent string
+	}{
+		{"native", "", "--system=aarch64-linux", "--target="},
+		{"cross", "aarch64-linux-gnu", "--target=aarch64-linux-gnu", "--system="},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stopped := errors.New("stop")
+			called := false
+			runner := runnerFunc(func(_ context.Context, _ string, _ string, args ...string) (string, string, error) {
+				called = true
+				if !slices.Contains(args, tc.want) {
+					t.Fatalf("missing %s in %v", tc.want, args)
+				}
+				for _, arg := range args {
+					if strings.HasPrefix(arg, tc.absent) {
+						t.Fatalf("unexpected %s in %v", arg, args)
+					}
+				}
+				return "", "", stopped
+			})
+			_, _, err := (Client{Runner: runner}).BuildImage(t.Context(), Source{System: "aarch64-linux"}, "rpi-raw", tc.target, filepath.Join(t.TempDir(), "image"))
+			if !called || !errors.Is(err, stopped) {
+				t.Fatalf("runner not called or error lost: %v", err)
 			}
 		})
 	}
@@ -134,6 +164,9 @@ func TestSourceIsolationAndDigest(t *testing.T) {
 	b.Files["a"] = "changed"
 	if a.Digest() == b.Digest() {
 		t.Fatal("supporting file change ignored")
+	}
+	if a.ImageDigest("") != a.Digest() || a.ImageDigest("aarch64-linux-gnu") == a.ImageDigest("") || a.ImageDigest("aarch64-linux-gnu") == a.ImageDigest("arm-linux-gnueabihf") {
+		t.Fatal("image digest does not track cross target while preserving native digest")
 	}
 	if SchemeString("\"\\\n") != `"\"\\\n"` {
 		t.Fatal("invalid Scheme quoting")

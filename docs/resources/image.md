@@ -41,11 +41,12 @@ resource "guix_image" "server" {
 - `name` (String) Operator-visible artifact label. Images appear under artifact_directory/<name>/<id>/image while apply waits for manual boot.
 - `source_files` (Map of String) Supporting files keyed by relative path, including Scheme modules and local assets. Provider filenames and path traversal are rejected.
 - `system` (String) Guix target system, including platforms exported by pinned channels.
+- `target` (String) GNU target triplet for cross-compiling the image, for example aarch64-linux-gnu. Builds use the runner's native system; host system builds and deployments still use system.
 
 ### Read-Only
 
 - `artifact_path` (String) Persistent image symlink and Guix GC root. Available under artifact_directory/<name>/<id>/image during manual commissioning.
 - `id` (String) Unique resource identity, owning an independent image GC root.
-- `input_digest` (String) Digest of the configuration, channels, target system and source files.
+- `input_digest` (String) Digest of the configuration, channels, system, cross target and source files.
 - `sha256` (String) SHA256 checksum of the image bytes.
 - `store_path` (String) Immutable Guix store image path.
