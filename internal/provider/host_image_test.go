@@ -26,8 +26,9 @@ func testHostImage(t *testing.T) types.Object {
 	image := HostImageModel{
 		ID: types.StringValue("image-id"), ArtifactPath: types.StringValue("/tmp/artifacts/server/image"),
 		Configuration: types.StringValue("image configuration"), Channels: types.StringValue("image channels"),
-		System:      types.StringValue("aarch64-linux"),
-		SourceFiles: types.MapValueMust(types.StringType, map[string]attr.Value{"asset": types.StringValue("image asset")}),
+		System:           types.StringValue("aarch64-linux"),
+		SystemDefinition: types.StringValue("platform source"),
+		SourceFiles:      types.MapValueMust(types.StringType, map[string]attr.Value{"asset": types.StringValue("image asset")}),
 	}
 	value, diagnostics := types.ObjectValueFrom(t.Context(), hostImageType(t).AttrTypes, image)
 	if diagnostics.HasError() {
@@ -54,7 +55,7 @@ func TestReadHostImage(t *testing.T) {
 			if tc.missing {
 				return
 			}
-			for _, value := range []attr.Value{image.ID, image.ArtifactPath, image.Configuration, image.Channels, image.System, image.SourceFiles} {
+			for _, value := range []attr.Value{image.ID, image.ArtifactPath, image.Configuration, image.Channels, image.System, image.SystemDefinition, image.SourceFiles} {
 				if value.IsUnknown() != tc.unknown {
 					t.Fatalf("image value lost its known/unknown state: %s", value)
 				}
@@ -88,7 +89,7 @@ func TestHostImageCommissioningInfoLog(t *testing.T) {
 	if diagnostics := r.reconcile(ctx, &model, "create"); diagnostics.HasError() {
 		t.Fatal(diagnostics)
 	}
-	wantSource := guix.Source{Configuration: "image configuration", Channels: "image channels", System: "aarch64-linux", Files: map[string]string{"asset": "image asset"}}
+	wantSource := guix.Source{Configuration: "image configuration", Channels: "image channels", System: "aarch64-linux", SystemDefinition: "platform source", Files: map[string]string{"asset": "image asset"}}
 	if backend.observed != desired(wantSource) {
 		t.Fatalf("deployed %s; want %s", backend.observed, desired(wantSource))
 	}

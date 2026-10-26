@@ -22,6 +22,8 @@ import (
 // contents. GUIX_TEST_SYSTEM and GUIX_TEST_IMAGE_TYPE default to x86_64-linux and
 // efi-raw. For real deployment, also set GUIX_TEST_DEPLOY_ADDRESS,
 // GUIX_TEST_HOST_KEY, and GUIX_TEST_IDENTITY_FILE (root SSH on port 22).
+// GUIX_TEST_IMAGE_DEFINITION and GUIX_TEST_SYSTEM_DEFINITION optionally name
+// Scheme files whose contents are supplied as custom image/platform definitions.
 func TestIntegrationGuix(t *testing.T) {
 	if os.Getenv("GUIX_INTEGRATION") != "1" {
 		t.Skip("set GUIX_INTEGRATION=1 to run real Guix builds")
@@ -39,6 +41,12 @@ func TestIntegrationGuix(t *testing.T) {
 		return string(contents)
 	}
 	source := guix.Source{Configuration: read("GUIX_TEST_CONFIGURATION"), Channels: read("GUIX_TEST_CHANNELS"), System: os.Getenv("GUIX_TEST_SYSTEM")}
+	if os.Getenv("GUIX_TEST_IMAGE_DEFINITION") != "" {
+		source.ImageDefinition = read("GUIX_TEST_IMAGE_DEFINITION")
+	}
+	if os.Getenv("GUIX_TEST_SYSTEM_DEFINITION") != "" {
+		source.SystemDefinition = read("GUIX_TEST_SYSTEM_DEFINITION")
+	}
 	if source.System == "" {
 		source.System = "x86_64-linux"
 	}
@@ -63,6 +71,9 @@ func TestIntegrationGuix(t *testing.T) {
 	if len(checksum) != 64 {
 		t.Fatalf("invalid checksum: %s", checksum)
 	}
+	// Image definitions are needed only to construct the image. Hosts inherit
+	// platform definitions for subsequent system builds and deployments.
+	source.ImageDefinition = ""
 	expected, err := client.BuildSystem(t.Context(), source)
 	if err != nil {
 		t.Fatal(err)

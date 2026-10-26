@@ -74,6 +74,7 @@ type fakeBackend struct {
 	deployments, builds, attempts, failAttempts int
 	resolveError, inspectError                  error
 	deploymentError                             error
+	imageSource                                 guix.Source
 }
 
 func (f *fakeBackend) Resolve(context.Context, string) (string, error) {
@@ -114,6 +115,7 @@ func (f *fakeBackend) BuildImage(ctx context.Context, s guix.Source, _ string, r
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.builds++
+	f.imageSource = s
 	image := filepath.Join(f.directory, "image-"+s.Digest())
 	if err := os.WriteFile(image, []byte(s.Configuration), 0600); err != nil {
 		return "", "", err

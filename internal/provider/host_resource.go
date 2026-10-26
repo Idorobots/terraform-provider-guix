@@ -139,6 +139,7 @@ func (r *HostResource) reconcile(ctx context.Context, model *HostModel, operatio
 	image, imageDiagnostics := readHostImage(ctx, model.Image)
 	diagnostics.Append(imageDiagnostics...)
 	s, sourceDiagnostics := source(ctx, image.Configuration, image.Channels, image.System, image.SourceFiles)
+	s.SystemDefinition = image.SystemDefinition.ValueString()
 	diagnostics.Append(sourceDiagnostics...)
 	duration, timeoutDiagnostics := hostTimeout(ctx, model.Timeouts, operation)
 	diagnostics.Append(timeoutDiagnostics...)

@@ -107,8 +107,58 @@ assets participate in OpenTofu planning. The provider creates an isolated
 workspace and adds it to the Guix load path. Relative assets should use Guix
 `local-file`. All needed files must be included explicitly; paths outside the
 bundle are not automatically tracked. The top-level names `configuration.scm`,
-`channels.scm`, `machines.scm`, and `identity` are reserved. Pin every channel to a
-commit to make builds and deployments reproducible.
+`channels.scm`, `machines.scm`, `identity`, and names starting with
+`.terraform-guix` are reserved.
+Pin every channel to a commit to make builds and deployments reproducible.
+
+### Custom image types and platforms
+
+`image_definition` accepts Scheme **source contents**, independently of the
+operating-system `configuration`. For example, `images/homelab.scm` can export a
+minimal custom image type based on Guix's EFI image:
+
+```scheme
+(define-module (homelab images)
+  #:use-module (gnu image)
+  #:use-module (gnu system image)
+  #:export (homelab-image-type))
+
+(define homelab-image-type
+  (image-type
+    (inherit efi-raw-image-type)
+    (name 'homelab-efi-raw)))
+```
+
+```hcl
+resource "guix_image" "homelab" {
+  configuration    = file("${path.module}/system.scm")
+  channels         = file("${path.module}/channels-lock.scm")
+  image_type       = "homelab-efi-raw"
+  image_definition = file("${path.module}/images/homelab.scm")
+  system           = "aarch64-linux"
+}
+```
+
+The provider loads this source inside pinned `guix time-machine` and explicitly
+includes its exported image-type records during lookup. `image_type` matches the
+record's `name`, not its Scheme binding name. Built-in types remain available;
+neither a channel installation nor a `gnu/system/images/` directory is needed.
+
+For a custom **platform** referenced by `system`, use
+`system_definition = file("${path.module}/platforms/custom.scm")`. That source must
+export Guix `platform` records whose `system` field matches the requested system.
+It is loaded before image definitions and before Guix validates `--system`.
+Built-in systems such as `aarch64-linux` need no `system_definition`. This input
+defines platforms; `configuration` still defines the operating system. Hosts
+using `image = guix_image.homelab` inherit platform source for subsequent system
+builds and deployment.
+
+Both definition inputs accept `file()`, `templatefile()`, or inline Scheme.
+Changes replace the image. Their original local directories are not copied:
+include supporting modules and assets in `source_files`, using workspace-relative
+paths for assets. Each definition should declare a module and export its records
+(or use `define-public`). Custom records take precedence over built-in records
+with the same name. Omitting the inputs preserves the standard Guix behavior.
 
 ### Import
 
@@ -163,6 +213,10 @@ are retained because OpenTofu uses the same configuration and provider conventio
 To exercise actual Guix builds against your own configuration, see
 [`internal/guix/integration_test.go`](internal/guix/integration_test.go). Real-host
 SSH checks are opt-in in [`internal/remote/ssh_test.go`](internal/remote/ssh_test.go).
+Custom-definition lookup tests run when Guix is installed and do not build images.
+To run these checks inside pinned Guix as well, set
+`GUIX_TEST_LOOKUP_CHANNELS=/path/to/channels-lock.scm` and run
+`go test -v ./internal/guix -run TestDefinitionLookup`.
 
 For local OpenTofu development, configure a CLI development override in a
 `.tofurc` file. Use the directory reported by `go env GOBIN`; if that is empty,

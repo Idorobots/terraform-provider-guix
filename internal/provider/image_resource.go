@@ -26,18 +26,20 @@ var _ resource.ResourceWithConfigure = &ImageResource{}
 
 type ImageResource struct{ client *Client }
 type ImageModel struct {
-	ID            types.String `tfsdk:"id"`
-	Name          types.String `tfsdk:"name"`
-	Configuration types.String `tfsdk:"configuration"`
-	Channels      types.String `tfsdk:"channels"`
-	System        types.String `tfsdk:"system"`
-	SourceFiles   types.Map    `tfsdk:"source_files"`
-	ImageType     types.String `tfsdk:"image_type"`
-	ArtifactPath  types.String `tfsdk:"artifact_path"`
-	StorePath     types.String `tfsdk:"store_path"`
-	SHA256        types.String `tfsdk:"sha256"`
-	InputDigest   types.String `tfsdk:"input_digest"`
-	BuildTimeout  types.String `tfsdk:"build_timeout"`
+	ID               types.String `tfsdk:"id"`
+	Name             types.String `tfsdk:"name"`
+	Configuration    types.String `tfsdk:"configuration"`
+	Channels         types.String `tfsdk:"channels"`
+	System           types.String `tfsdk:"system"`
+	SourceFiles      types.Map    `tfsdk:"source_files"`
+	ImageType        types.String `tfsdk:"image_type"`
+	ImageDefinition  types.String `tfsdk:"image_definition"`
+	SystemDefinition types.String `tfsdk:"system_definition"`
+	ArtifactPath     types.String `tfsdk:"artifact_path"`
+	StorePath        types.String `tfsdk:"store_path"`
+	SHA256           types.String `tfsdk:"sha256"`
+	InputDigest      types.String `tfsdk:"input_digest"`
+	BuildTimeout     types.String `tfsdk:"build_timeout"`
 }
 
 func NewImageResource() resource.Resource { return &ImageResource{} }
@@ -49,10 +51,12 @@ func (*ImageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 	attrs["name"] = schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("image"), MarkdownDescription: "Operator-visible artifact label. Images appear under artifact_directory/<name>/<id>/image while apply waits for manual boot.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("artifact label (letters, digits, underscores and hyphens)")}}
 	attrs["id"] = computedString("Unique resource identity, owning an independent image GC root.", true)
 	attrs["image_type"] = schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("efi-raw"), MarkdownDescription: "Guix system image type.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("nonempty string")}}
+	attrs["image_definition"] = definitionSchema("Scheme source exporting custom image types, loaded before image_type lookup inside pinned Guix. Use file() or templatefile(); supporting modules and assets belong in source_files.", true)
+	attrs["system_definition"] = definitionSchema("Scheme source exporting custom platforms referenced by system, loaded before target-system validation inside pinned Guix. Separate from the operating-system configuration. Use file() or templatefile().", true)
 	attrs["artifact_path"] = computedString("Persistent image symlink and Guix GC root. Available under artifact_directory/<name>/<id>/image during manual commissioning.", false)
 	attrs["store_path"] = computedString("Immutable Guix store image path.", false)
 	attrs["sha256"] = computedString("SHA256 checksum of the image bytes.", false)
-	attrs["input_digest"] = computedString("Digest of the configuration, channels, target system and source files.", false)
+	attrs["input_digest"] = computedString("Digest of the configuration, channels, target system, custom definitions and source files.", false)
 	attrs["build_timeout"] = schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("2h"), MarkdownDescription: "Image build deadline.", Validators: []validator.String{stringCheck("positive duration")}}
 	resp.Schema = schema.Schema{MarkdownDescription: "Build an immutable Guix System image with pinned channels. Flash and boot it manually; the provider retains it using a per-resource GC root. Destroy releases only that reference.", Attributes: attrs}
 }
@@ -74,6 +78,8 @@ func (r *ImageResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 	s, diagnostics := source(ctx, m.Configuration, m.Channels, m.System, m.SourceFiles)
+	s.ImageDefinition = m.ImageDefinition.ValueString()
+	s.SystemDefinition = m.SystemDefinition.ValueString()
 	resp.Diagnostics.Append(diagnostics...)
 	if resp.Diagnostics.HasError() {
 		return

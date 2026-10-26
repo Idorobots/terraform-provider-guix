@@ -72,6 +72,14 @@ func computedString(description string, stable bool) schema.StringAttribute {
 	return a
 }
 
+func definitionSchema(description string, replace bool) schema.StringAttribute {
+	a := schema.StringAttribute{Optional: true, MarkdownDescription: description, Validators: []validator.String{stringCheck("nonempty string")}}
+	if replace {
+		a.PlanModifiers = []planmodifier.String{stringplanmodifier.RequiresReplace()}
+	}
+	return a
+}
+
 func source(ctx context.Context, configuration, channels, system types.String, files types.Map) (guix.Source, diag.Diagnostics) {
 	var diagnostics diag.Diagnostics
 	s := guix.Source{Configuration: configuration.ValueString(), Channels: channels.ValueString(), System: system.ValueString()}

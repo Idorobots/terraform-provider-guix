@@ -118,7 +118,7 @@ func TestPinnedDeploymentAndWorkspaceCleanup(t *testing.T) {
 }
 
 func TestSourceIsolationAndDigest(t *testing.T) {
-	for _, path := range []string{"../escape", "/absolute", "a/../../escape", "a/../b", "configuration.scm", "channels.scm/nested", "machines.scm", "identity"} {
+	for _, path := range []string{"../escape", "/absolute", "a/../../escape", "a/../b", "configuration.scm", "channels.scm/nested", "machines.scm", "identity", ".terraform-guix", ".terraform-guix/image.scm"} {
 		t.Run(path, func(t *testing.T) {
 			_, err := workspace(Source{Files: map[string]string{path: "bad"}})
 			if err == nil {
