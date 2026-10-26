@@ -59,7 +59,7 @@ func sourceSchema(required bool) map[string]schema.Attribute {
 	return map[string]schema.Attribute{
 		"configuration": schema.StringAttribute{Required: required, Optional: !required, MarkdownDescription: "Guix operating-system expression as Scheme source. Use file() or templatefile() so OpenTofu tracks changes.", Validators: []validator.String{stringCheck("nonempty string")}, PlanModifiers: stringModifiers},
 		"channels":      schema.StringAttribute{Required: required, Optional: !required, MarkdownDescription: "Pinned channels Scheme source, normally produced by guix describe -f channels. Used with guix time-machine.", Validators: []validator.String{stringCheck("nonempty string")}, PlanModifiers: stringModifiers},
-		"system":        schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("x86_64-linux"), MarkdownDescription: "Guix target system.", Validators: []validator.String{stringCheck("nonempty string")}, PlanModifiers: stringModifiers},
+		"system":        schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("x86_64-linux"), MarkdownDescription: "Guix target system, including platforms exported by pinned channels.", Validators: []validator.String{stringCheck("nonempty string")}, PlanModifiers: stringModifiers},
 		"source_files":  schema.MapAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Supporting files keyed by relative path, including Scheme modules and local assets. Provider filenames and path traversal are rejected.", PlanModifiers: mapModifiers},
 	}
 }
@@ -68,14 +68,6 @@ func computedString(description string, stable bool) schema.StringAttribute {
 	a := schema.StringAttribute{Computed: true, MarkdownDescription: description}
 	if stable {
 		a.PlanModifiers = []planmodifier.String{stringplanmodifier.UseStateForUnknown()}
-	}
-	return a
-}
-
-func definitionSchema(description string, replace bool) schema.StringAttribute {
-	a := schema.StringAttribute{Optional: true, MarkdownDescription: description, Validators: []validator.String{stringCheck("nonempty string")}}
-	if replace {
-		a.PlanModifiers = []planmodifier.String{stringplanmodifier.RequiresReplace()}
 	}
 	return a
 }

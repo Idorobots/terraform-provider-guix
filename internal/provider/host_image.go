@@ -13,13 +13,12 @@ import (
 )
 
 type HostImageModel struct {
-	ID               types.String `tfsdk:"id"`
-	ArtifactPath     types.String `tfsdk:"artifact_path"`
-	Configuration    types.String `tfsdk:"configuration"`
-	Channels         types.String `tfsdk:"channels"`
-	System           types.String `tfsdk:"system"`
-	SystemDefinition types.String `tfsdk:"system_definition"`
-	SourceFiles      types.Map    `tfsdk:"source_files"`
+	ID            types.String `tfsdk:"id"`
+	ArtifactPath  types.String `tfsdk:"artifact_path"`
+	Configuration types.String `tfsdk:"configuration"`
+	Channels      types.String `tfsdk:"channels"`
+	System        types.String `tfsdk:"system"`
+	SourceFiles   types.Map    `tfsdk:"source_files"`
 }
 
 func hostImageSchema() schema.SingleNestedAttribute {
@@ -27,13 +26,12 @@ func hostImageSchema() schema.SingleNestedAttribute {
 		Required:            true,
 		MarkdownDescription: "Guix image object, normally guix_image.<name>. Defines the host's configuration, channels, target system, supporting files, image identity and manual commissioning file path. Image changes reconcile the host in place.",
 		Attributes: map[string]schema.Attribute{
-			"id":                schema.StringAttribute{Required: true, MarkdownDescription: "Image resource identity."},
-			"artifact_path":     schema.StringAttribute{Required: true, MarkdownDescription: "Image file for manual flashing and booting."},
-			"configuration":     schema.StringAttribute{Required: true, MarkdownDescription: "Host operating-system Scheme source."},
-			"channels":          schema.StringAttribute{Required: true, MarkdownDescription: "Pinned channels Scheme source."},
-			"system":            schema.StringAttribute{Required: true, MarkdownDescription: "Host target architecture."},
-			"system_definition": definitionSchema("Scheme source exporting custom target platforms, normally inherited from guix_image. Loaded for system builds and deployment; separate from configuration.", false),
-			"source_files":      schema.MapAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Supporting source files."},
+			"id":            schema.StringAttribute{Required: true, MarkdownDescription: "Image resource identity."},
+			"artifact_path": schema.StringAttribute{Required: true, MarkdownDescription: "Image file for manual flashing and booting."},
+			"configuration": schema.StringAttribute{Required: true, MarkdownDescription: "Host operating-system Scheme source."},
+			"channels":      schema.StringAttribute{Required: true, MarkdownDescription: "Pinned channels Scheme source."},
+			"system":        schema.StringAttribute{Required: true, MarkdownDescription: "Host target architecture."},
+			"source_files":  schema.MapAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Supporting source files."},
 		},
 	}
 }
@@ -46,7 +44,6 @@ func readHostImage(ctx context.Context, value types.Object) (HostImageModel, dia
 			ID: types.StringUnknown(), ArtifactPath: types.StringUnknown(),
 			Configuration: types.StringUnknown(), Channels: types.StringUnknown(),
 			System: types.StringUnknown(), SourceFiles: types.MapUnknown(types.StringType),
-			SystemDefinition: types.StringUnknown(),
 		}
 	} else if value.IsNull() {
 		diagnostics.AddError("Missing Guix image", "Set image = guix_image.<name> to define the host's desired system and commissioning image.")

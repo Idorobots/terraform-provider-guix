@@ -66,7 +66,6 @@ Required:
 Optional:
 
 - `source_files` (Map of String) Supporting source files.
-- `system_definition` (String) Scheme source exporting custom target platforms, normally inherited from guix_image. Loaded for system builds and deployment; separate from configuration.
 
 
 <a id="nestedatt--ssh"></a>

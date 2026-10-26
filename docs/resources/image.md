@@ -20,10 +20,6 @@ resource "guix_image" "server" {
   image_type    = "efi-raw"
   system        = "x86_64-linux"
 
-  # Optional source contents for custom image types and target platforms:
-  # image_definition  = file("${path.module}/images/custom.scm")
-  # system_definition = file("${path.module}/platforms/custom.scm")
-
   source_files = {
     "management.pub" = guix_key_pair.management.authorized_key
   }
@@ -41,17 +37,15 @@ resource "guix_image" "server" {
 ### Optional
 
 - `build_timeout` (String) Image build deadline.
-- `image_definition` (String) Scheme source exporting custom image types, loaded before image_type lookup inside pinned Guix. Use file() or templatefile(); supporting modules and assets belong in source_files.
-- `image_type` (String) Guix system image type.
+- `image_type` (String) Guix system image type, including types exported by pinned channels.
 - `name` (String) Operator-visible artifact label. Images appear under artifact_directory/<name>/<id>/image while apply waits for manual boot.
 - `source_files` (Map of String) Supporting files keyed by relative path, including Scheme modules and local assets. Provider filenames and path traversal are rejected.
-- `system` (String) Guix target system.
-- `system_definition` (String) Scheme source exporting custom platforms referenced by system, loaded before target-system validation inside pinned Guix. Separate from the operating-system configuration. Use file() or templatefile().
+- `system` (String) Guix target system, including platforms exported by pinned channels.
 
 ### Read-Only
 
 - `artifact_path` (String) Persistent image symlink and Guix GC root. Available under artifact_directory/<name>/<id>/image during manual commissioning.
 - `id` (String) Unique resource identity, owning an independent image GC root.
-- `input_digest` (String) Digest of the configuration, channels, target system, custom definitions and source files.
+- `input_digest` (String) Digest of the configuration, channels, target system and source files.
 - `sha256` (String) SHA256 checksum of the image bytes.
 - `store_path` (String) Immutable Guix store image path.

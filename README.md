@@ -107,18 +107,28 @@ assets participate in OpenTofu planning. The provider creates an isolated
 workspace and adds it to the Guix load path. Relative assets should use Guix
 `local-file`. All needed files must be included explicitly; paths outside the
 bundle are not automatically tracked. The top-level names `configuration.scm`,
-`channels.scm`, `machines.scm`, `identity`, and names starting with
-`.terraform-guix` are reserved.
-Pin every channel to a commit to make builds and deployments reproducible.
+`channels.scm`, `machines.scm`, and `identity` are reserved. Pin every channel to a
+commit to make builds and deployments reproducible.
 
 ### Custom image types and platforms
 
-`image_definition` accepts Scheme **source contents**, independently of the
-operating-system `configuration`. For example, `images/homelab.scm` can export a
-minimal custom image type based on Guix's EFI image:
+Distribute custom image types and platforms through a Guix channel and include
+that channel, pinned to a commit, in `channels-lock.scm` alongside pinned Guix.
+`guix time-machine` creates and caches an isolated profile containing those
+channels; no global `guix pull` is needed on the runner.
+
+Use Guix's standard discovery layout in the channel repository:
+
+```text
+gnu/system/images/homelab.scm  # (gnu system images homelab), exporting image types
+guix/platforms/homelab.scm     # (guix platforms homelab), exporting custom platforms
+```
+
+For example, `gnu/system/images/homelab.scm` can export a minimal custom image
+type based on Guix's EFI image:
 
 ```scheme
-(define-module (homelab images)
+(define-module (gnu system images homelab)
   #:use-module (gnu image)
   #:use-module (gnu system image)
   #:export (homelab-image-type))
@@ -131,34 +141,25 @@ minimal custom image type based on Guix's EFI image:
 
 ```hcl
 resource "guix_image" "homelab" {
-  configuration    = file("${path.module}/system.scm")
-  channels         = file("${path.module}/channels-lock.scm")
-  image_type       = "homelab-efi-raw"
-  image_definition = file("${path.module}/images/homelab.scm")
-  system           = "aarch64-linux"
+  configuration = file("${path.module}/system.scm")
+  channels      = file("${path.module}/channels-lock.scm")
+  image_type    = "homelab-efi-raw"
+  system        = "aarch64-linux"
 }
 ```
 
-The provider loads this source inside pinned `guix time-machine` and explicitly
-includes its exported image-type records during lookup. `image_type` matches the
-record's `name`, not its Scheme binding name. Built-in types remain available;
-neither a channel installation nor a `gnu/system/images/` directory is needed.
+Guix discovers the exported types and platforms from the pinned channel profile.
+`image_type` matches an image-type record's `name`, not its Scheme binding name;
+`system` matches a platform record's `system` field. Built-in systems such as
+`aarch64-linux` need no custom platform. `configuration` continues to define the
+operating system, and `source_files` supplies supporting modules and assets.
+Adding files to `source_files` makes them importable through `-L`, but does not
+register them for image/platform discovery inside a pinned channel profile.
 
-For a custom **platform** referenced by `system`, use
-`system_definition = file("${path.module}/platforms/custom.scm")`. That source must
-export Guix `platform` records whose `system` field matches the requested system.
-It is loaded before image definitions and before Guix validates `--system`.
-Built-in systems such as `aarch64-linux` need no `system_definition`. This input
-defines platforms; `configuration` still defines the operating system. Hosts
-using `image = guix_image.homelab` inherit platform source for subsequent system
-builds and deployment.
-
-Both definition inputs accept `file()`, `templatefile()`, or inline Scheme.
-Changes replace the image. Their original local directories are not copied:
-include supporting modules and assets in `source_files`, using workspace-relative
-paths for assets. Each definition should declare a module and export its records
-(or use `define-public`). Custom records take precedence over built-in records
-with the same name. Omitting the inputs preserves the standard Guix behavior.
+Publish definition changes to the channel and update its pinned commit to use
+them. Changes to `channels` replace the image. Hosts using
+`image = guix_image.homelab` inherit those same channels for system builds and
+deployment.
 
 ### Import
 
@@ -213,10 +214,8 @@ are retained because OpenTofu uses the same configuration and provider conventio
 To exercise actual Guix builds against your own configuration, see
 [`internal/guix/integration_test.go`](internal/guix/integration_test.go). Real-host
 SSH checks are opt-in in [`internal/remote/ssh_test.go`](internal/remote/ssh_test.go).
-Custom-definition lookup tests run when Guix is installed and do not build images.
-To run these checks inside pinned Guix as well, set
-`GUIX_TEST_LOOKUP_CHANNELS=/path/to/channels-lock.scm` and run
-`go test -v ./internal/guix -run TestDefinitionLookup`.
+To exercise a custom image type or platform, include its pinned channel in
+`GUIX_TEST_CHANNELS` and select it with `GUIX_TEST_IMAGE_TYPE` or `GUIX_TEST_SYSTEM`.
 
 For local OpenTofu development, configure a CLI development override in a
 `.tofurc` file. Use the directory reported by `go env GOBIN`; if that is empty,

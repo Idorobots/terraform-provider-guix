@@ -18,12 +18,10 @@ import (
 )
 
 type Source struct {
-	Configuration    string
-	Channels         string
-	System           string
-	Files            map[string]string
-	ImageDefinition  string `json:",omitempty"`
-	SystemDefinition string `json:",omitempty"`
+	Configuration string
+	Channels      string
+	System        string
+	Files         map[string]string
 }
 
 func (s Source) Digest() string {
@@ -54,7 +52,7 @@ func ValidSourcePath(name string) bool {
 	}
 	// Reserve the provider's top-level filenames and all their descendants.
 	first := strings.Split(name, string(filepath.Separator))[0]
-	return first != "configuration.scm" && first != "channels.scm" && first != "machines.scm" && first != "identity" && !strings.HasPrefix(first, definitionPrefix)
+	return first != "configuration.scm" && first != "channels.scm" && first != "machines.scm" && first != "identity"
 }
 
 func workspace(s Source) (string, error) {
@@ -69,15 +67,6 @@ func workspace(s Source) (string, error) {
 		}
 	}()
 	files := map[string]string{"configuration.scm": s.Configuration, "channels.scm": s.Channels}
-	if s.ImageDefinition != "" || s.SystemDefinition != "" {
-		files[definitionLauncherFile] = definitionLauncher
-		if s.ImageDefinition != "" {
-			files[imageDefinitionFile] = s.ImageDefinition
-		}
-		if s.SystemDefinition != "" {
-			files[systemDefinitionFile] = s.SystemDefinition
-		}
-	}
 	for name, contents := range s.Files {
 		if !ValidSourcePath(name) {
 			return "", fmt.Errorf("invalid or reserved source path %q", name)
@@ -102,21 +91,8 @@ func workspace(s Source) (string, error) {
 	return dir, nil
 }
 
-func (c Client) invoke(ctx context.Context, dir string, source Source, command string, args ...string) (string, error) {
+func (c Client) invoke(ctx context.Context, dir, command string, args ...string) (string, error) {
 	prefix := []string{"time-machine", "-C", filepath.Join(dir, "channels.scm"), "--", command, "-L", dir}
-	if source.ImageDefinition != "" || source.SystemDefinition != "" {
-		systemFile, imageFile := "", ""
-		if source.SystemDefinition != "" {
-			systemFile = filepath.Join(dir, systemDefinitionFile)
-		}
-		if source.ImageDefinition != "" {
-			imageFile = filepath.Join(dir, imageDefinitionFile)
-			if source.ImageDefinition == source.SystemDefinition {
-				imageFile = systemFile
-			}
-		}
-		prefix = []string{"time-machine", "-C", filepath.Join(dir, "channels.scm"), "--", "repl", "-L", dir, "--", filepath.Join(dir, definitionLauncherFile), systemFile, imageFile, command}
-	}
 	return run(ctx, c.Runner, dir, "guix", append(prefix, args...)...)
 }
 
@@ -137,7 +113,7 @@ func (c Client) BuildImage(ctx context.Context, source Source, imageType, root s
 	if err := os.MkdirAll(filepath.Dir(root), 0700); err != nil {
 		return "", "", err
 	}
-	out, err := c.invoke(ctx, dir, source, "system", "image", "--image-type="+imageType, "--system="+source.System, "--root="+root, filepath.Join(dir, "configuration.scm"))
+	out, err := c.invoke(ctx, dir, "system", "image", "--image-type="+imageType, "--system="+source.System, "--root="+root, filepath.Join(dir, "configuration.scm"))
 	if err != nil {
 		return "", "", err
 	}
@@ -179,7 +155,7 @@ func (c Client) BuildSystem(ctx context.Context, source Source) (string, error) 
 		return "", err
 	}
 	defer os.RemoveAll(dir)
-	out, err := c.invoke(ctx, dir, source, "system", "build", "--system="+source.System, filepath.Join(dir, "configuration.scm"))
+	out, err := c.invoke(ctx, dir, "system", "build", "--system="+source.System, filepath.Join(dir, "configuration.scm"))
 	if err != nil {
 		return "", err
 	}
@@ -248,6 +224,6 @@ func (c Client) Deploy(ctx context.Context, source Source, destination Destinati
 	if err := os.WriteFile(filepath.Join(dir, "machines.scm"), []byte(definition), 0600); err != nil {
 		return err
 	}
-	_, err = c.invoke(ctx, dir, source, "deploy", filepath.Join(dir, "machines.scm"))
+	_, err = c.invoke(ctx, dir, "deploy", filepath.Join(dir, "machines.scm"))
 	return err
 }
