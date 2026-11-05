@@ -59,7 +59,7 @@ Required:
 
 - `artifact_path` (String) Image file for manual flashing and booting.
 - `channels` (String) Pinned channels Scheme source.
-- `configuration` (String) Host operating-system Scheme source.
+- `configuration` (String) Scheme source evaluating to an operating-system or image specification. Deployment uses the image's embedded operating system when applicable.
 - `id` (String) Image resource identity.
 - `system` (String) Host target architecture.
 

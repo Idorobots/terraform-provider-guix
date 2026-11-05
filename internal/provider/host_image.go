@@ -28,7 +28,7 @@ func hostImageSchema() schema.SingleNestedAttribute {
 		Attributes: map[string]schema.Attribute{
 			"id":            schema.StringAttribute{Required: true, MarkdownDescription: "Image resource identity."},
 			"artifact_path": schema.StringAttribute{Required: true, MarkdownDescription: "Image file for manual flashing and booting."},
-			"configuration": schema.StringAttribute{Required: true, MarkdownDescription: "Host operating-system Scheme source."},
+			"configuration": schema.StringAttribute{Required: true, MarkdownDescription: "Scheme source evaluating to an operating-system or image specification. Deployment uses the image's embedded operating system when applicable."},
 			"channels":      schema.StringAttribute{Required: true, MarkdownDescription: "Pinned channels Scheme source."},
 			"system":        schema.StringAttribute{Required: true, MarkdownDescription: "Host target architecture."},
 			"source_files":  schema.MapAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Supporting source files."},

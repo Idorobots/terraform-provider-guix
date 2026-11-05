@@ -71,6 +71,7 @@ type fakeBackend struct {
 	directory                                   string
 	address, observed                           string
 	addressAfterDeploy                          string
+	imageType                                   string
 	deployments, builds, attempts, failAttempts int
 	resolveError, inspectError                  error
 	deploymentError                             error
@@ -110,10 +111,11 @@ func (f *fakeBackend) Deploy(_ context.Context, s guix.Source, _ guix.Destinatio
 	f.deploymentError = nil
 	return err
 }
-func (f *fakeBackend) BuildImage(ctx context.Context, s guix.Source, _, target, root string) (string, string, error) {
+func (f *fakeBackend) BuildImage(ctx context.Context, s guix.Source, imageType, target, root string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.builds++
+	f.imageType = imageType
 	image := filepath.Join(f.directory, "image-"+s.ImageDigest(target))
 	if err := os.WriteFile(image, []byte(s.Configuration), 0600); err != nil {
 		return "", "", err
@@ -145,7 +147,7 @@ func TestProviderSchema(t *testing.T) {
 			t.Fatal(diagnostic.Detail)
 		}
 	}
-	for _, name := range []string{"guix_image", "guix_host", "guix_key_pair"} {
+	for _, name := range []string{"guix_image", "guix_host", "guix_key_pair", "guix_secrets"} {
 		if response.ResourceSchemas[name] == nil {
 			t.Fatalf("missing %s", name)
 		}
@@ -386,6 +388,48 @@ resource "guix_host" "server" {
 	}})
 }
 
+func TestAccOptionalImageType(t *testing.T) {
+	client, backend := fakeClient(t)
+	config := func(imageType string) string {
+		option := ""
+		if imageType != "" {
+			option = fmt.Sprintf("image_type = %q", imageType)
+		}
+		return fmt.Sprintf(`
+provider "guix" { artifact_directory = %q }
+resource "guix_image" "server" {
+  configuration = "(image ...)"
+  channels = "pinned"
+  %s
+}
+`, client.ArtifactDirectory, option)
+	}
+	check := func(imageType string, builds int) testresource.TestCheckFunc {
+		return func(state *terraform.State) error {
+			image := state.RootModule().Resources["guix_image.server"].Primary.Attributes
+			if image["image_type"] != imageType {
+				return fmt.Errorf("image_type state=%q; want %q", image["image_type"], imageType)
+			}
+			backend.mu.Lock()
+			defer backend.mu.Unlock()
+			if backend.imageType != imageType || backend.builds != builds {
+				return fmt.Errorf("build image_type=%q builds=%d; want %q %d", backend.imageType, backend.builds, imageType, builds)
+			}
+			return nil
+		}
+	}
+	testresource.Test(t, testresource.TestCase{ProtoV6ProviderFactories: factories(client), Steps: []testresource.TestStep{
+		{Config: config(""), Check: check("", 1)},
+		{Config: config(""), PlanOnly: true, ExpectNonEmptyPlan: false},
+		{Config: config("efi-raw"), ConfigPlanChecks: testresource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+			plancheck.ExpectResourceAction("guix_image.server", plancheck.ResourceActionDestroyBeforeCreate),
+		}}, Check: check("efi-raw", 2)},
+		{Config: config(""), ConfigPlanChecks: testresource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+			plancheck.ExpectResourceAction("guix_image.server", plancheck.ResourceActionDestroyBeforeCreate),
+		}}, Check: check("", 3)},
+	}})
+}
+
 func TestAccKeyPair(t *testing.T) {
 	public, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -421,6 +465,7 @@ func TestImageRootOwnership(t *testing.T) {
 	r.Schema(t.Context(), resource.SchemaRequest{}, &schemaResponse)
 	state := tfsdk.State{Schema: schemaResponse.Schema}
 	model := ImageModel{ID: types.StringValue("11111111111111111111111111111111"), ArtifactPath: types.StringValue(first), Configuration: types.StringValue("same"), Channels: types.StringValue("pinned"), System: types.StringValue("x86_64-linux"), SourceFiles: types.MapNull(types.StringType), ImageType: types.StringValue("efi-raw"), StorePath: types.StringValue("unused"), SHA256: types.StringValue("unused"), InputDigest: types.StringValue("unused"), BuildTimeout: types.StringValue("2h")}
+	model.Secrets = types.ObjectNull(imageSecretsSchema().GetType().(types.ObjectType).AttrTypes)
 	if diagnostics := state.Set(t.Context(), model); diagnostics.HasError() {
 		t.Fatal(diagnostics)
 	}

@@ -42,6 +42,8 @@ func (v stringCheck) ValidateString(_ context.Context, req validator.StringReque
 		valid = strings.TrimSpace(s) != ""
 	case "artifact label (letters, digits, underscores and hyphens)":
 		valid = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(s)
+	case "octal file mode":
+		valid = regexp.MustCompile(`^0[0-7]{3}$`).MatchString(s)
 	}
 	if !valid {
 		resp.Diagnostics.AddAttributeError(req.Path, "Invalid value", "Expected "+string(v)+".")
@@ -57,7 +59,7 @@ func sourceSchema(required bool) map[string]schema.Attribute {
 		mapModifiers = []planmodifier.Map{mapplanmodifier.RequiresReplace()}
 	}
 	return map[string]schema.Attribute{
-		"configuration": schema.StringAttribute{Required: required, Optional: !required, MarkdownDescription: "Guix operating-system expression as Scheme source. Use file() or templatefile() so OpenTofu tracks changes.", Validators: []validator.String{stringCheck("nonempty string")}, PlanModifiers: stringModifiers},
+		"configuration": schema.StringAttribute{Required: required, Optional: !required, MarkdownDescription: "Scheme source evaluating to a Guix operating-system or image specification. Supply raw source, file(), or templatefile(); a literal filename is not loaded automatically.", Validators: []validator.String{stringCheck("nonempty string")}, PlanModifiers: stringModifiers},
 		"channels":      schema.StringAttribute{Required: required, Optional: !required, MarkdownDescription: "Pinned channels Scheme source, normally produced by guix describe -f channels. Used with guix time-machine.", Validators: []validator.String{stringCheck("nonempty string")}, PlanModifiers: stringModifiers},
 		"system":        schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("x86_64-linux"), MarkdownDescription: "Guix target system, including platforms exported by pinned channels.", Validators: []validator.String{stringCheck("nonempty string")}, PlanModifiers: stringModifiers},
 		"source_files":  schema.MapAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Supporting files keyed by relative path, including Scheme modules and local assets. Provider filenames and path traversal are rejected.", PlanModifiers: mapModifiers},

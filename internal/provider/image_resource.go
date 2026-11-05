@@ -33,6 +33,7 @@ type ImageModel struct {
 	System        types.String `tfsdk:"system"`
 	Target        types.String `tfsdk:"target"`
 	SourceFiles   types.Map    `tfsdk:"source_files"`
+	Secrets       types.Object `tfsdk:"secrets"`
 	ImageType     types.String `tfsdk:"image_type"`
 	ArtifactPath  types.String `tfsdk:"artifact_path"`
 	StorePath     types.String `tfsdk:"store_path"`
@@ -47,9 +48,10 @@ func (*ImageResource) Metadata(_ context.Context, req resource.MetadataRequest, 
 }
 func (*ImageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	attrs := sourceSchema(true)
+	attrs["secrets"] = imageSecretsSchema()
 	attrs["name"] = schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("image"), MarkdownDescription: "Operator-visible artifact label. Images appear under artifact_directory/<name>/<id>/image while apply waits for manual boot.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("artifact label (letters, digits, underscores and hyphens)")}}
 	attrs["id"] = computedString("Unique resource identity, owning an independent image GC root.", true)
-	attrs["image_type"] = schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("efi-raw"), MarkdownDescription: "Guix system image type, including types exported by pinned channels.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("nonempty string")}}
+	attrs["image_type"] = schema.StringAttribute{Optional: true, MarkdownDescription: "Guix image type for an operating-system configuration, including types exported by pinned channels. Omit to use the pinned Guix default. An image specification determines its own layout, following native Guix behavior.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("nonempty string")}}
 	attrs["target"] = schema.StringAttribute{Optional: true, MarkdownDescription: "GNU target triplet for cross-compiling the image, for example aarch64-linux-gnu. Builds use the runner's native system; host system builds and deployments still use system.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("nonempty string")}}
 	attrs["artifact_path"] = computedString("Persistent image symlink and Guix GC root. Available under artifact_directory/<name>/<id>/image during manual commissioning.", false)
 	attrs["store_path"] = computedString("Immutable Guix store image path.", false)
@@ -132,7 +134,7 @@ func (*ImageResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	}
 }
 func (*ImageResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	// Only the build timeout can change without replacement.
+	// Descriptor-only secrets and the build timeout can change without rebuilding.
 	var old, plan ImageModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &old)...)
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -140,6 +142,7 @@ func (*ImageResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		return
 	}
 	old.BuildTimeout = plan.BuildTimeout
+	old.Secrets = plan.Secrets
 	resp.Diagnostics.Append(resp.State.Set(ctx, &old)...)
 }
 func (*ImageResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {

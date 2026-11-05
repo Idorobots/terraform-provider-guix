@@ -9,6 +9,7 @@ the default CLI for development, documentation generation, and deployment.
 | [`guix_image`](docs/resources/image.md) | Build an immutable bootable image and retain it with an independent Guix GC root |
 | [`guix_host`](docs/resources/host.md) | Discover a running installation, expose its IPv4 address, and reconcile its configuration |
 | [`guix_key_pair`](docs/resources/key_pair.md) | Name and normalize a management public key for Guix SSH authorization |
+| [`guix_secrets`](docs/resources/secrets.md) | Describe sensitive files and attach their dependencies to an image; installation is deferred |
 
 ## Requirements
 
@@ -101,14 +102,49 @@ are mode 0600 and removed after the operation.
 
 ### Source bundles
 
-`configuration` must evaluate to a Guix `operating-system` object. `source_files`
-maps relative paths to contents, so changes to imported Scheme modules and local
+`guix_secrets` accepts a map of absolute file destinations to objects containing
+sensitive `content` and an optional `mode` (default `0600`). Attach the whole
+resource with `secrets = guix_secrets.<name>` on an image. These descriptors are
+stored in Terraform state and never merged into `source_files` or passed to Guix
+build commands. The resource has no SOPS or age dependency.
+
+**This version records attachments only:** it does not personalize images or
+install files on running hosts. Attachment changes update state without rebuilding
+the immutable image. Destroy forgets descriptors; it does not remove remote files.
+Keep any external ciphertext preparation in a separate module and pass its
+encrypted output explicitly through `source_files`.
+
+`configuration` is Scheme source evaluating to either a Guix `operating-system`
+or an `image` containing an operating system. Supply raw source, `file()`, or
+`templatefile()`; literal filenames are not loaded automatically. The provider
+writes the source to `configuration.scm` and uses the pinned Guix version to
+evaluate it. Image creation uses the supplied specification, and host system
+builds/deployment use its embedded OS when the result is an image.
+
+`image_type` is optional. With an OS result, omitting it uses the pinned Guix
+version's default image type; setting it passes `--image-type` to Guix. With an
+image result, the specification determines its own format and layout, following
+native Guix behavior. There is no provider-selected default. To retain the former
+implicit EFI behavior for OS specifications, set `image_type = "efi-raw"` explicitly.
+
+`source_files` maps relative paths to contents, so changes to imported Scheme modules and local
 assets participate in OpenTofu planning. The provider creates an isolated
 workspace and adds it to the Guix load path. Relative assets should use Guix
 `local-file`. All needed files must be included explicitly; paths outside the
 bundle are not automatically tracked. The top-level names `configuration.scm`,
 `channels.scm`, `machines.scm`, and `identity` are reserved. Pin every channel to a
 commit to make builds and deployments reproducible.
+
+For a bundled file that returns an image or an OS, preserve its relative assets
+with an explicit load:
+
+```hcl
+configuration = "(load \"hosts/server.scm\")"
+source_files = {
+  "hosts/server.scm" = file("${path.module}/hosts/server.scm")
+  # Include the file's supporting modules and assets at their relative paths.
+}
+```
 
 ### Custom image types and platforms
 
@@ -151,8 +187,8 @@ resource "guix_image" "homelab" {
 Guix discovers the exported types and platforms from the pinned channel profile.
 `image_type` matches an image-type record's `name`, not its Scheme binding name;
 `system` matches a platform record's `system` field. Built-in systems such as
-`aarch64-linux` need no custom platform. `configuration` continues to define the
-operating system, and `source_files` supplies supporting modules and assets.
+`aarch64-linux` need no custom platform. `configuration` defines the operating
+system or image, and `source_files` supplies supporting modules and assets.
 Adding files to `source_files` makes them importable through `-L`, but does not
 register them for image/platform discovery inside a pinned channel profile.
 
@@ -227,6 +263,17 @@ To exercise actual Guix builds against your own configuration, see
 SSH checks are opt-in in [`internal/remote/ssh_test.go`](internal/remote/ssh_test.go).
 To exercise a custom image type or platform, include its pinned channel in
 `GUIX_TEST_CHANNELS` and select it with `GUIX_TEST_IMAGE_TYPE` or `GUIX_TEST_SYSTEM`.
+
+To evaluate generated machine definitions against installed Guix without building
+an image or contacting a host, run:
+
+```shell
+GUIX_EVALUATION=1 go test ./internal/guix -run Specification
+```
+
+These checks exercise inline and file-loaded OS/image configurations, relative
+assets, and invalid specification diagnostics. They use the installed Guix; the
+opt-in full integration test uses the pinned channels supplied by the operator.
 
 For local OpenTofu development, configure a CLI development override in a
 `.tofurc` file. Use the directory reported by `go env GOBIN`; if that is empty,

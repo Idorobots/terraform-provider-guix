@@ -19,8 +19,9 @@ import (
 // GUIX_TEST_CHANNELS=/path/to/channels-lock.scm go test -v ./internal/guix -run Integration
 //
 // Optional: GUIX_TEST_SOURCE_FILES is a JSON file mapping relative names to source
-// contents. GUIX_TEST_SYSTEM and GUIX_TEST_IMAGE_TYPE default to x86_64-linux and
-// efi-raw. GUIX_TEST_TARGET optionally sets the image cross-compilation triplet.
+// contents. GUIX_TEST_SYSTEM defaults to x86_64-linux; GUIX_TEST_IMAGE_TYPE is
+// optional and otherwise leaves the type to Guix/the image specification.
+// GUIX_TEST_TARGET optionally sets the image cross-compilation triplet.
 // System builds still require a native or offloaded builder. For real deployment,
 // also set GUIX_TEST_DEPLOY_ADDRESS, GUIX_TEST_HOST_KEY, and
 // GUIX_TEST_IDENTITY_FILE (root SSH on port 22).
@@ -52,9 +53,6 @@ func TestIntegrationGuix(t *testing.T) {
 		}
 	}
 	imageType := os.Getenv("GUIX_TEST_IMAGE_TYPE")
-	if imageType == "" {
-		imageType = "efi-raw"
-	}
 	client := guix.Client{Runner: guix.ExecRunner{}}
 	root := filepath.Join(t.TempDir(), "image")
 	store, checksum, err := client.BuildImage(t.Context(), source, imageType, os.Getenv("GUIX_TEST_TARGET"), root)

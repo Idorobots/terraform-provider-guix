@@ -131,7 +131,12 @@ func (c Client) BuildImage(ctx context.Context, source Source, imageType, target
 	if target != "" {
 		architecture = "--target=" + target
 	}
-	out, err := c.invoke(ctx, dir, "system", "image", "--image-type="+imageType, architecture, "--root="+root, filepath.Join(dir, "configuration.scm"))
+	args := []string{"image"}
+	if imageType != "" {
+		args = append(args, "--image-type="+imageType)
+	}
+	args = append(args, architecture, "--root="+root, filepath.Join(dir, "configuration.scm"))
+	out, err := c.invoke(ctx, dir, "system", args...)
 	if err != nil {
 		return "", "", err
 	}
@@ -227,9 +232,19 @@ func (c Client) Deploy(ctx context.Context, source Source, destination Destinati
 	if err != nil {
 		return err
 	}
-	definition := `(use-modules (gnu machine) (gnu machine ssh))
+	definition := `(use-modules (gnu image) (gnu system)
+             (gnu machine) (gnu machine ssh)
+             (guix scripts system))
+(define specification
+  (read-operating-system ` + SchemeString(filepath.Join(dir, "configuration.scm")) + `))
+(define os
+  (if (image? specification)
+      (image-operating-system specification)
+      specification))
+(unless (operating-system? os)
+  (error "configuration must evaluate to an operating-system or an image containing one"))
 (list (machine
-  (operating-system (load ` + SchemeString(filepath.Join(dir, "configuration.scm")) + `))
+  (operating-system os)
   (environment managed-host-environment-type)
   (configuration (machine-ssh-configuration
     (host-name ` + SchemeString(destination.Address) + `)

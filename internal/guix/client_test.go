@@ -119,6 +119,36 @@ func TestImageArchitectureArguments(t *testing.T) {
 	}
 }
 
+func TestOptionalImageType(t *testing.T) {
+	for _, configuration := range []string{"(operating-system ...)", "(image ...)"} {
+		for _, imageType := range []string{"", "efi-raw"} {
+			t.Run(configuration+"/"+imageType, func(t *testing.T) {
+				stopped := errors.New("stop before building")
+				runner := runnerFunc(func(_ context.Context, dir, _ string, args ...string) (string, string, error) {
+					contents, err := os.ReadFile(filepath.Join(dir, "configuration.scm"))
+					if err != nil || string(contents) != configuration {
+						t.Fatalf("configuration was not preserved: %v", err)
+					}
+					var options []string
+					for _, arg := range args {
+						if strings.HasPrefix(arg, "--image-type") {
+							options = append(options, arg)
+						}
+					}
+					if imageType == "" && len(options) != 0 || imageType != "" && !slices.Equal(options, []string{"--image-type=" + imageType}) {
+						t.Fatalf("unexpected image type options: %v", options)
+					}
+					return "", "", stopped
+				})
+				_, _, err := (Client{Runner: runner}).BuildImage(t.Context(), Source{Configuration: configuration}, imageType, "", filepath.Join(t.TempDir(), "image"))
+				if !errors.Is(err, stopped) {
+					t.Fatalf("runner error lost: %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestPinnedDeploymentAndWorkspaceCleanup(t *testing.T) {
 	runner := &recordingRunner{t: t}
 	client := Client{Runner: runner}
