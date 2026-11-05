@@ -4,8 +4,6 @@ package provider
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -26,7 +24,6 @@ import (
 	testresource "github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
-	"golang.org/x/crypto/ssh"
 )
 
 // The upstream testing library retains TF_ACC_* names. Select OpenTofu and its
@@ -147,7 +144,7 @@ func TestProviderSchema(t *testing.T) {
 			t.Fatal(diagnostic.Detail)
 		}
 	}
-	for _, name := range []string{"guix_blueprint", "guix_image", "guix_host", "guix_key_pair", "guix_secrets"} {
+	for _, name := range []string{"guix_blueprint", "guix_image", "guix_host", "guix_secrets"} {
 		if response.ResourceSchemas[name] == nil {
 			t.Fatalf("missing %s", name)
 		}
@@ -431,23 +428,6 @@ resource "guix_image" "server" {
 			plancheck.ExpectResourceAction("guix_image.server", plancheck.ResourceActionDestroyBeforeCreate),
 		}}, Check: check("", 3)},
 	}})
-}
-
-func TestAccKeyPair(t *testing.T) {
-	public, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key, err := ssh.NewPublicKey(public)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, _ := fakeClient(t)
-	config := fmt.Sprintf(`resource "guix_key_pair" "management" {
-name = "management"
-public_key = %q
-}`, string(ssh.MarshalAuthorizedKey(key)))
-	testresource.Test(t, testresource.TestCase{ProtoV6ProviderFactories: factories(client), Steps: []testresource.TestStep{{Config: config, Check: testresource.TestCheckResourceAttr("guix_key_pair.management", "fingerprint", ssh.FingerprintSHA256(key))}}})
 }
 
 func TestImageRootOwnership(t *testing.T) {

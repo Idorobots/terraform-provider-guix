@@ -27,15 +27,10 @@ resource "tls_private_key" "management" {
   algorithm = "ED25519"
 }
 
-resource "guix_key_pair" "management" {
-  name       = "homelab-management"
-  public_key = tls_private_key.management.public_key_openssh
-}
-
 locals {
   channels = file("${path.module}/channels-lock.scm")
   sources = {
-    "management.pub" = guix_key_pair.management.authorized_key
+    "management.pub" = tls_private_key.management.public_key_openssh
   }
   controller_configuration = templatefile("${path.module}/system.scm.tftpl", {
     hostname           = "controller"
@@ -91,8 +86,8 @@ resource "guix_host" "worker" {
 
 output "management_key" {
   value = {
-    public_key  = guix_key_pair.management.authorized_key
-    fingerprint = guix_key_pair.management.fingerprint
+    public_key  = tls_private_key.management.public_key_openssh
+    fingerprint = tls_private_key.management.public_key_fingerprint_sha256
   }
 }
 

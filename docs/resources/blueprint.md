@@ -19,7 +19,7 @@ resource "guix_blueprint" "server" {
 
   source_files = {
     "hosts/server.scm"     = file("${path.module}/hosts/server.scm")
-    "hosts/management.pub" = guix_key_pair.management.authorized_key
+    "hosts/management.pub" = tls_private_key.management.public_key_openssh
   }
 
   secrets = guix_secrets.server

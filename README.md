@@ -9,7 +9,6 @@ This project is vibe-coded. I strongly advise against using it for anything seri
 | [`guix_blueprint`](docs/resources/blueprint.md) | OS, image and machine specifications, pinned channels, sources and secret descriptors |
 | [`guix_image`](docs/resources/image.md) | Build an immutable bootable image |
 | [`guix_host`](docs/resources/host.md) | Discover a running installation, expose its IPv4 address, and reconcile its configuration |
-| [`guix_key_pair`](docs/resources/key_pair.md) | Name and normalize a management public key for Guix SSH authorization |
 | [`guix_secrets`](docs/resources/secrets.md) | Describe sensitive files and attach their dependencies to a blueprint; installation is deferred |
 
 ## Requirements
@@ -51,11 +50,11 @@ During apply, the provider also logs host commissioning instructions at INFO
 level (`TF_LOG_PROVIDER=INFO`). Image paths are available on the image resource
 and under the GC-root location above.
 
-Images and hosts are independent consumers of the blueprint. A host can be
-managed without building an image, and an image can be built without declaring
-a host. Neither leaf accepts its own channels or source files, and a host never
-accepts an image object. Both leaves have their own `system` attribute, defaulting
-to `x86_64-linux`; set it explicitly for other architectures.
+Images and hosts independently consume a blueprint containing their channels,
+source files and specifications. A host can be managed without building an
+image, and an image can be built without declaring a host. Each leaf has its own
+`system` attribute, defaulting to `x86_64-linux`; set it explicitly for other
+architectures.
 
 ### Lifecycle and state
 
@@ -88,12 +87,13 @@ to `x86_64-linux`; set it explicitly for other architectures.
 
 ### Management keys and host identity
 
-`guix_key_pair` takes an OpenSSH **public** key, such as
-`tls_private_key.management.public_key_openssh`. Its `authorized_key` output is
-passed into a Guix source bundle for `openssh-configuration`'s `authorized-keys`.
-The matching private key authenticates management connections. Deleting or
-rotating the logical key resource changes host authorization when the consuming
-Guix configurations are subsequently deployed.
+Generate management SSH keys with `tls_private_key` from the TLS provider. Pass
+`tls_private_key.management.public_key_openssh` directly into the blueprint's
+source bundle for `openssh-configuration`'s `authorized-keys`. Use the matching
+`private_key_openssh` for management connections. The TLS provider also exposes
+`public_key_fingerprint_sha256` for displaying or verifying the public key.
+Authorization changes take effect when the consuming Guix configurations are
+deployed.
 
 `ssh.host_key` is the server's own OpenSSH public key. Obtain it through a trusted
 commissioning channel, or provision the corresponding host identity separately.
@@ -145,8 +145,8 @@ in SSH settings or secret descriptors rather than Scheme source strings.
 `image_type` is optional. With an OS result, omitting it uses the pinned Guix
 version's default image type; setting it passes `--image-type` to Guix. With an
 image result, the specification determines its own format and layout, following
-native Guix behavior. There is no provider-selected default. To retain the former
-implicit EFI behavior for OS specifications, set `image_type = "efi-raw"` explicitly.
+native Guix behavior. Set `image_type = "efi-raw"` to select an EFI raw image
+explicitly when using an OS specification.
 
 `source_files` maps relative paths to contents, so changes to imported Scheme modules and local
 assets participate in OpenTofu planning. The provider creates an isolated
@@ -250,19 +250,6 @@ system but does not infer its blueprint; the blueprint is populated from
 configuration on the next apply. Image artifacts and logical descriptors are
 created from configuration rather than imported.
 
-### Migrating from image-owned configuration
-
-This is a breaking schema change. Move image `configuration`, `channels`,
-`source_files` and `secrets` to a new `guix_blueprint`. Rename `configuration` to
-`os` or `image` according to its result type. If it returned an image and the
-blueprint is also consumed by a host, supply a separate `os` or `machine`
-expression for that host. Set `blueprint` on both leaves, replace the host's old
-`image` attribute, and set its `system` explicitly when not `x86_64-linux`.
-Existing pre-blueprint leaf state is not automatically migrated; retain a state
-backup and adopt existing hosts through hostname import after removing their old
-state entries. Image artifacts require recreation; removing an old image state
-entry alone does not release its GC root.
-
 ## Development
 
 Use Go >= 1.25.8 and install `tofu` on PATH. This repository uses the Terraform
@@ -279,7 +266,7 @@ make generate
 Acceptance tests run the real OpenTofu CLI against deterministic, injected
 Guix/discovery/SSH backends; they need no hardware or Guix daemon. Tests cover
 delayed discovery, import, in-place deployment, rollback drift, IP-dependent
-image replacement, offline semantics, key-pair integration, cancellation, and
+image replacement, offline semantics, cancellation, and
 independent image ownership. Both `make testacc` and direct
 `TF_ACC=1 go test ./internal/provider` invocations default to `tofu` and
 `registry.opentofu.org/spartanworks/guix`. Set `TOFU=/absolute/path/to/tofu` to use

@@ -17,7 +17,7 @@ resource "guix_blueprint" "server" {
   os       = file("${path.module}/system.scm")
   channels = file("${path.module}/channels-lock.scm")
   source_files = {
-    "management.pub" = guix_key_pair.management.authorized_key
+    "management.pub" = tls_private_key.management.public_key_openssh
   }
 }
 
@@ -39,7 +39,7 @@ resource "guix_blueprint" "from_image_specification" {
 
   source_files = {
     "system.scm"     = file("${path.module}/system.scm")
-    "management.pub" = guix_key_pair.management.authorized_key
+    "management.pub" = tls_private_key.management.public_key_openssh
   }
 }
 
