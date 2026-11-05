@@ -18,6 +18,7 @@ import (
 )
 
 type Source struct {
+	Kind          string
 	Configuration string
 	Channels      string
 	System        string
@@ -66,7 +67,7 @@ func ValidSourcePath(name string) bool {
 	}
 	// Reserve the provider's top-level filenames and all their descendants.
 	first := strings.Split(name, string(filepath.Separator))[0]
-	return first != "configuration.scm" && first != "channels.scm" && first != "machines.scm" && first != "identity"
+	return first != "specification.scm" && first != "configuration.scm" && first != "channels.scm" && first != "machines.scm" && first != "identity"
 }
 
 func workspace(s Source) (string, error) {
@@ -80,7 +81,11 @@ func workspace(s Source) (string, error) {
 			_ = os.RemoveAll(dir)
 		}
 	}()
-	files := map[string]string{"configuration.scm": s.Configuration, "channels.scm": s.Channels}
+	definition, err := configurationDefinition(s, dir)
+	if err != nil {
+		return "", err
+	}
+	files := map[string]string{"specification.scm": s.Configuration, "configuration.scm": definition, "channels.scm": s.Channels}
 	for name, contents := range s.Files {
 		if !ValidSourcePath(name) {
 			return "", fmt.Errorf("invalid or reserved source path %q", name)
@@ -232,31 +237,43 @@ func (c Client) Deploy(ctx context.Context, source Source, destination Destinati
 	if err != nil {
 		return err
 	}
-	definition := `(use-modules (gnu image) (gnu system)
-             (gnu machine) (gnu machine ssh)
-             (guix scripts system))
-(define specification
-  (read-operating-system ` + SchemeString(filepath.Join(dir, "configuration.scm")) + `))
-(define os
-  (if (image? specification)
-      (image-operating-system specification)
-      specification))
-(unless (operating-system? os)
-  (error "configuration must evaluate to an operating-system or an image containing one"))
-(list (machine
-  (operating-system os)
-  (environment managed-host-environment-type)
-  (configuration (machine-ssh-configuration
-    (host-name ` + SchemeString(destination.Address) + `)
-    (system ` + SchemeString(source.System) + `)
-    (user ` + SchemeString(destination.User) + `)
-    (port ` + strconv.Itoa(destination.Port) + `)
-    (identity ` + SchemeString(identity) + `)
-    (host-key ` + SchemeString(destination.HostKey) + `)))))
-`
+	definition, err := deploymentDefinition(source, dir, destination, identity)
+	if err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(dir, "machines.scm"), []byte(definition), 0600); err != nil {
 		return err
 	}
 	_, err = c.invoke(ctx, dir, "deploy", filepath.Join(dir, "machines.scm"))
 	return err
+}
+
+func deploymentDefinition(source Source, dir string, destination Destination, identity string) (string, error) {
+	definition, err := specificationDefinition(source, dir)
+	if err != nil {
+		return "", err
+	}
+	if source.Kind == "image" {
+		return "", fmt.Errorf("host deployment requires a machine or OS specification")
+	}
+	machineFields := `(operating-system specification)
+  (environment managed-host-environment-type)`
+	configurationFields := ""
+	if source.Kind == "machine" {
+		machineFields = `(inherit specification)`
+		configurationFields = `(inherit (machine-configuration specification))`
+	}
+	return definition + `
+(list (machine
+  ` + machineFields + `
+  (configuration (machine-ssh-configuration
+    ` + configurationFields + `
+    (host-name ` + SchemeString(destination.Address) + `)
+    (system ` + SchemeString(source.System) + `)
+    (user ` + SchemeString(destination.User) + `)
+    (port ` + strconv.Itoa(destination.Port) + `)
+    (identity ` + SchemeString(identity) + `)
+    (session #f)
+    (host-key ` + SchemeString(destination.HostKey) + `)))))
+`, nil
 }

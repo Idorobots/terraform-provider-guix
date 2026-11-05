@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -23,23 +24,21 @@ import (
 )
 
 var _ resource.ResourceWithConfigure = &ImageResource{}
+var _ resource.ResourceWithModifyPlan = &ImageResource{}
 
 type ImageResource struct{ client *Client }
 type ImageModel struct {
-	ID            types.String `tfsdk:"id"`
-	Name          types.String `tfsdk:"name"`
-	Configuration types.String `tfsdk:"configuration"`
-	Channels      types.String `tfsdk:"channels"`
-	System        types.String `tfsdk:"system"`
-	Target        types.String `tfsdk:"target"`
-	SourceFiles   types.Map    `tfsdk:"source_files"`
-	Secrets       types.Object `tfsdk:"secrets"`
-	ImageType     types.String `tfsdk:"image_type"`
-	ArtifactPath  types.String `tfsdk:"artifact_path"`
-	StorePath     types.String `tfsdk:"store_path"`
-	SHA256        types.String `tfsdk:"sha256"`
-	InputDigest   types.String `tfsdk:"input_digest"`
-	BuildTimeout  types.String `tfsdk:"build_timeout"`
+	ID           types.String `tfsdk:"id"`
+	Name         types.String `tfsdk:"name"`
+	Blueprint    types.Object `tfsdk:"blueprint"`
+	System       types.String `tfsdk:"system"`
+	Target       types.String `tfsdk:"target"`
+	ImageType    types.String `tfsdk:"image_type"`
+	ArtifactPath types.String `tfsdk:"artifact_path"`
+	StorePath    types.String `tfsdk:"store_path"`
+	SHA256       types.String `tfsdk:"sha256"`
+	InputDigest  types.String `tfsdk:"input_digest"`
+	BuildTimeout types.String `tfsdk:"build_timeout"`
 }
 
 func NewImageResource() resource.Resource { return &ImageResource{} }
@@ -47,8 +46,7 @@ func (*ImageResource) Metadata(_ context.Context, req resource.MetadataRequest, 
 	resp.TypeName = req.ProviderTypeName + "_image"
 }
 func (*ImageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
-	attrs := sourceSchema(true)
-	attrs["secrets"] = imageSecretsSchema()
+	attrs := map[string]schema.Attribute{"blueprint": blueprintSchema(), "system": systemSchema(true)}
 	attrs["name"] = schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("image"), MarkdownDescription: "Operator-visible artifact label. Images appear under artifact_directory/<name>/<id>/image while apply waits for manual boot.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("artifact label (letters, digits, underscores and hyphens)")}}
 	attrs["id"] = computedString("Unique resource identity, owning an independent image GC root.", true)
 	attrs["image_type"] = schema.StringAttribute{Optional: true, MarkdownDescription: "Guix image type for an operating-system configuration, including types exported by pinned channels. Omit to use the pinned Guix default. An image specification determines its own layout, following native Guix behavior.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("nonempty string")}}
@@ -77,8 +75,11 @@ func (r *ImageResource) Create(ctx context.Context, req resource.CreateRequest, 
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	s, diagnostics := source(ctx, m.Configuration, m.Channels, m.System, m.SourceFiles)
+	s, known, diagnostics := blueprintSource(ctx, m.Blueprint, m.System, "image")
 	resp.Diagnostics.Append(diagnostics...)
+	if !known && !resp.Diagnostics.HasError() {
+		resp.Diagnostics.AddError("Unknown Guix image inputs", "The selected blueprint specification, channels, source files and system must be known before building.")
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -134,16 +135,45 @@ func (*ImageResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	}
 }
 func (*ImageResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	// Descriptor-only secrets and the build timeout can change without rebuilding.
-	var old, plan ImageModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &old)...)
+	// Effective build input changes replace the resource. Other blueprint changes
+	// and timeout edits only update the descriptor recorded in state.
+	var plan ImageModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	old.BuildTimeout = plan.BuildTimeout
-	old.Secrets = plan.Secrets
-	resp.Diagnostics.Append(resp.State.Set(ctx, &old)...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+func (*ImageResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var plan ImageModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	s, known, diagnostics := blueprintSource(ctx, plan.Blueprint, plan.System, "image")
+	resp.Diagnostics.Append(diagnostics...)
+	if resp.Diagnostics.HasError() || req.State.Raw.IsNull() {
+		return
+	}
+	var old ImageModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &old)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	previous, previousKnown, previousDiagnostics := blueprintSource(ctx, old.Blueprint, old.System, "image")
+	if !known || !previousKnown || previousDiagnostics.HasError() || s.Digest() != previous.Digest() {
+		resp.RequiresReplace.Append(path.Root("blueprint"))
+		return
+	}
+	if !plan.Name.Equal(old.Name) || !plan.ImageType.Equal(old.ImageType) || !plan.Target.Equal(old.Target) {
+		return
+	}
+	for name, value := range map[string]types.String{"artifact_path": old.ArtifactPath, "store_path": old.StorePath, "sha256": old.SHA256, "input_digest": old.InputDigest} {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(name), value)...)
+	}
 }
 func (*ImageResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var m ImageModel

@@ -22,8 +22,8 @@ func TestHostCommissioningPlanWarning(t *testing.T) {
 		destroy    bool
 		wantDetail string
 	}{
-		{"known image", false, true, false, `image file "/tmp/artifacts/server/image"`},
-		{"pending image", true, true, false, "image file path is known after the image is built"},
+		{"known blueprint", false, true, false, "reconciles its blueprint"},
+		{"pending blueprint", true, true, false, "reconciles its blueprint"},
 		{"existing host", false, false, false, ""},
 		{"destroy", false, false, true, ""},
 	} {
@@ -32,7 +32,7 @@ func TestHostCommissioningPlanWarning(t *testing.T) {
 			state := hostState(t, r)
 			plan := tfsdk.Plan(state)
 			if tc.pending {
-				if diagnostics := plan.SetAttribute(t.Context(), path.Root("image"), types.ObjectUnknown(hostImageType(t).AttrTypes)); diagnostics.HasError() {
+				if diagnostics := plan.SetAttribute(t.Context(), path.Root("blueprint"), types.ObjectUnknown(blueprintSchema().GetType().(types.ObjectType).AttrTypes)); diagnostics.HasError() {
 					t.Fatal(diagnostics)
 				}
 			}
@@ -62,7 +62,7 @@ func TestHostCommissioningPlanWarning(t *testing.T) {
 			if warning.Summary() != "Manual commissioning required" {
 				t.Fatalf("unexpected summary: %s", warning.Summary())
 			}
-			for _, text := range []string{tc.wantDetail, "boot it", "node.local", "mDNS", "SSH", "create timeout"} {
+			for _, text := range []string{tc.wantDetail, "Boot a Guix System", "node.local", "mDNS", "SSH", "create timeout"} {
 				if !strings.Contains(warning.Detail(), text) {
 					t.Fatalf("warning missing %q: %s", text, warning.Detail())
 				}
@@ -71,16 +71,20 @@ func TestHostCommissioningPlanWarning(t *testing.T) {
 	}
 }
 
-func TestHostImageOnlySchema(t *testing.T) {
-	r := &HostResource{}
-	var response resource.SchemaResponse
-	r.Schema(t.Context(), resource.SchemaRequest{}, &response)
-	if !response.Schema.Attributes["image"].IsRequired() {
-		t.Fatal("image must be required")
-	}
-	for _, name := range []string{"configuration", "channels", "system", "source_files", "bootstrap_image", "bootstrap_image_path"} {
-		if _, exists := response.Schema.Attributes[name]; exists {
-			t.Fatalf("legacy host input %q is still present", name)
+func TestLeafBlueprintSchemas(t *testing.T) {
+	for _, r := range []resource.Resource{&HostResource{}, &ImageResource{}} {
+		var response resource.SchemaResponse
+		r.Schema(t.Context(), resource.SchemaRequest{}, &response)
+		if !response.Schema.Attributes["blueprint"].IsRequired() {
+			t.Fatal("blueprint must be required")
+		}
+		if response.Schema.Attributes["system"] == nil {
+			t.Fatal("leaf architecture is missing")
+		}
+		for _, name := range []string{"image", "configuration", "channels", "source_files", "secrets", "bootstrap_image", "bootstrap_image_path"} {
+			if _, exists := response.Schema.Attributes[name]; exists {
+				t.Fatalf("legacy host input %q is still present", name)
+			}
 		}
 	}
 }

@@ -30,7 +30,8 @@ type HostResource struct{ client *Client }
 type HostModel struct {
 	ID                 types.String `tfsdk:"id"`
 	Hostname           types.String `tfsdk:"hostname"`
-	Image              types.Object `tfsdk:"image"`
+	Blueprint          types.Object `tfsdk:"blueprint"`
+	System             types.String `tfsdk:"system"`
 	SSH                types.Object `tfsdk:"ssh"`
 	Timeouts           types.Object `tfsdk:"timeouts"`
 	IPv4               types.String `tfsdk:"ipv4_address"`
@@ -51,7 +52,8 @@ func (*HostResource) Metadata(_ context.Context, req resource.MetadataRequest, r
 }
 func (*HostResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	attrs := map[string]schema.Attribute{}
-	attrs["image"] = hostImageSchema()
+	attrs["blueprint"] = blueprintSchema()
+	attrs["system"] = systemSchema(false)
 	attrs["id"] = computedString("Stable hostname-based identity.", true)
 	attrs["hostname"] = schema.StringAttribute{Required: true, MarkdownDescription: "mDNS hostname ending in .local. Changing it replaces the tracked host.", Validators: []validator.String{stringCheck("mDNS hostname ending in .local")}, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}}
 	attrs["ssh"] = sshSchema()
@@ -136,10 +138,11 @@ func (r *HostResource) wait(ctx context.Context, hostname string, d guix.Destina
 
 func (r *HostResource) reconcile(ctx context.Context, model *HostModel, operation string) diag.Diagnostics {
 	d, diagnostics := destination(ctx, model.SSH, r.client.SSH)
-	image, imageDiagnostics := readHostImage(ctx, model.Image)
-	diagnostics.Append(imageDiagnostics...)
-	s, sourceDiagnostics := source(ctx, image.Configuration, image.Channels, image.System, image.SourceFiles)
+	s, known, sourceDiagnostics := blueprintSource(ctx, model.Blueprint, model.System, "machine")
 	diagnostics.Append(sourceDiagnostics...)
+	if !known && !diagnostics.HasError() {
+		diagnostics.AddError("Unknown Guix host inputs", "The selected blueprint specification, channels, source files and system must be known before reconciliation.")
+	}
 	duration, timeoutDiagnostics := hostTimeout(ctx, model.Timeouts, operation)
 	diagnostics.Append(timeoutDiagnostics...)
 	if diagnostics.HasError() {
@@ -148,8 +151,7 @@ func (r *HostResource) reconcile(ctx context.Context, model *HostModel, operatio
 	ctx, cancel := context.WithTimeout(ctx, duration)
 	defer cancel()
 	tflog.Info(ctx, "Waiting for manually commissioned Guix host", map[string]any{
-		"hostname": model.Hostname.ValueString(), "image_id": image.ID.ValueString(),
-		"image_path": image.ArtifactPath.ValueString(), "instructions": commissioningImageInstruction(image.ArtifactPath),
+		"hostname": model.Hostname.ValueString(), "instructions": "Boot a Guix System installation with mDNS and the configured SSH access.",
 		"timeout": duration.String(),
 	})
 	d, observed, err := r.wait(ctx, model.Hostname.ValueString(), d, "")
@@ -191,12 +193,15 @@ func (r *HostResource) Create(ctx context.Context, req resource.CreateRequest, r
 	}
 }
 func (r *HostResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var model HostModel
+	var model, old HostModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &model)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &old)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	resp.Diagnostics.Append(r.reconcile(ctx, &model, "update")...)
+	if hostNeedsReconcile(ctx, model, old) {
+		resp.Diagnostics.Append(r.reconcile(ctx, &model, "update")...)
+	}
 	if !resp.Diagnostics.HasError() {
 		resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
 	}
@@ -244,32 +249,44 @@ func (*HostResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequ
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	image, diagnostics := readHostImage(ctx, model.Image)
+	_, _, diagnostics := blueprintSource(ctx, model.Blueprint, model.System, "machine")
 	resp.Diagnostics.Append(diagnostics...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	if req.State.Raw.IsNull() {
-		instruction := commissioningImageInstruction(image.ArtifactPath)
 		target := "the configured .local hostname"
 		if !model.Hostname.IsNull() && !model.Hostname.IsUnknown() {
 			target = fmt.Sprintf("%q", model.Hostname.ValueString())
 		}
-		resp.Diagnostics.AddWarning("Manual commissioning required", instruction+"\n\nEnsure "+target+" is discoverable over mDNS and accepts SSH with the configured management key and pinned host key. Apply waits for this host until the create timeout, then reconciles its Guix system.")
+		resp.Diagnostics.AddWarning("Manual commissioning required", "Boot a Guix System installation. Ensure "+target+" is discoverable over mDNS and accepts SSH with the configured management key and pinned host key. Apply waits for this host until the create timeout, then reconciles its blueprint. Image builds are independent; add an explicit depends_on if bootstrap ordering is required.")
 		return
 	}
-	var observed, deployed types.String
-	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("system_path"), &observed)...)
-	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("deployed_system"), &deployed)...)
+	var old HostModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &old)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if !observed.IsNull() && !deployed.IsNull() && !observed.Equal(deployed) {
-		// Computed observations alone don't request Update. An unknown revision
-		// explicitly creates a reconciliation diff after an external rollback.
-		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("deployment_revision"), types.StringUnknown())...)
-		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("system_path"), types.StringUnknown())...)
+	needsReconcile := hostNeedsReconcile(ctx, model, old)
+	inputsChanged := hostInputsChanged(ctx, model, old)
+	for name, value := range map[string]types.String{"ipv4_address": old.IPv4, "system_path": old.SystemPath, "deployed_system": old.DeployedSystem, "deployment_revision": old.DeploymentRevision} {
+		if needsReconcile && (name != "ipv4_address" || inputsChanged) {
+			// This also requests reconciliation after an external rollback, when
+			// the only state change is a computed observation.
+			value = types.StringUnknown()
+		}
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(name), value)...)
 	}
+}
+
+func hostNeedsReconcile(ctx context.Context, plan, old HostModel) bool {
+	return hostInputsChanged(ctx, plan, old) || !old.SystemPath.Equal(old.DeployedSystem)
+}
+
+func hostInputsChanged(ctx context.Context, plan, old HostModel) bool {
+	s, known, diagnostics := blueprintSource(ctx, plan.Blueprint, plan.System, "machine")
+	return diagnostics.HasError() || !known || !plan.SSH.Equal(old.SSH) ||
+		old.DeploymentRevision.ValueString() != s.Digest()
 }
 func (*HostResource) Delete(context.Context, resource.DeleteRequest, *resource.DeleteResponse) {}
 func (*HostResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

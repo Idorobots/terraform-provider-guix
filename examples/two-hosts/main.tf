@@ -47,32 +47,42 @@ locals {
   })
 }
 
+resource "guix_blueprint" "controller" {
+  os           = local.controller_configuration
+  channels     = local.channels
+  source_files = local.sources
+}
+
 resource "guix_image" "controller" {
-  name          = "controller"
-  configuration = local.controller_configuration
-  channels      = local.channels
-  source_files  = local.sources
+  name      = "controller"
+  blueprint = guix_blueprint.controller
 }
 
 resource "guix_host" "controller" {
-  hostname = "controller.local"
-  image    = guix_image.controller
+  hostname   = "controller.local"
+  blueprint  = guix_blueprint.controller
+  depends_on = [guix_image.controller]
   ssh = {
     host_key    = var.host_public_keys.controller
     private_key = tls_private_key.management.private_key_openssh
   }
 }
 
+resource "guix_blueprint" "worker" {
+  os           = local.worker_configuration
+  channels     = local.channels
+  source_files = local.sources
+}
+
 resource "guix_image" "worker" {
-  name          = "worker"
-  configuration = local.worker_configuration
-  channels      = local.channels
-  source_files  = local.sources
+  name      = "worker"
+  blueprint = guix_blueprint.worker
 }
 
 resource "guix_host" "worker" {
-  hostname = "worker.local"
-  image    = guix_image.worker
+  hostname   = "worker.local"
+  blueprint  = guix_blueprint.worker
+  depends_on = [guix_image.worker]
   ssh = {
     host_key    = var.host_public_keys.worker
     private_key = tls_private_key.management.private_key_openssh

@@ -4,7 +4,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -13,7 +12,6 @@ import (
 	"github.com/SpartanWorks/terraform-provider-guix/internal/guix"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -50,20 +48,12 @@ func (v stringCheck) ValidateString(_ context.Context, req validator.StringReque
 	}
 }
 
-func sourceSchema(required bool) map[string]schema.Attribute {
-	var stringModifiers []planmodifier.String
-	var mapModifiers []planmodifier.Map
-	if required {
-		// Image sources are immutable; host sources are reconciled in place.
-		stringModifiers = []planmodifier.String{stringplanmodifier.RequiresReplace()}
-		mapModifiers = []planmodifier.Map{mapplanmodifier.RequiresReplace()}
+func systemSchema(immutable bool) schema.StringAttribute {
+	a := schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("x86_64-linux"), MarkdownDescription: "Guix native build system; defaults to x86_64-linux. Foreign-system builds require emulation or offloading. This does not request cross-compilation.", Validators: []validator.String{stringCheck("nonempty string")}}
+	if immutable {
+		a.PlanModifiers = []planmodifier.String{stringplanmodifier.RequiresReplace()}
 	}
-	return map[string]schema.Attribute{
-		"configuration": schema.StringAttribute{Required: required, Optional: !required, MarkdownDescription: "Scheme source evaluating to a Guix operating-system or image specification. Supply raw source, file(), or templatefile(); a literal filename is not loaded automatically.", Validators: []validator.String{stringCheck("nonempty string")}, PlanModifiers: stringModifiers},
-		"channels":      schema.StringAttribute{Required: required, Optional: !required, MarkdownDescription: "Pinned channels Scheme source, normally produced by guix describe -f channels. Used with guix time-machine.", Validators: []validator.String{stringCheck("nonempty string")}, PlanModifiers: stringModifiers},
-		"system":        schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("x86_64-linux"), MarkdownDescription: "Guix target system, including platforms exported by pinned channels.", Validators: []validator.String{stringCheck("nonempty string")}, PlanModifiers: stringModifiers},
-		"source_files":  schema.MapAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Supporting files keyed by relative path, including Scheme modules and local assets. Provider filenames and path traversal are rejected.", PlanModifiers: mapModifiers},
-	}
+	return a
 }
 
 func computedString(description string, stable bool) schema.StringAttribute {
@@ -72,23 +62,6 @@ func computedString(description string, stable bool) schema.StringAttribute {
 		a.PlanModifiers = []planmodifier.String{stringplanmodifier.UseStateForUnknown()}
 	}
 	return a
-}
-
-func source(ctx context.Context, configuration, channels, system types.String, files types.Map) (guix.Source, diag.Diagnostics) {
-	var diagnostics diag.Diagnostics
-	s := guix.Source{Configuration: configuration.ValueString(), Channels: channels.ValueString(), System: system.ValueString()}
-	if s.Configuration == "" || s.Channels == "" {
-		diagnostics.AddError("Missing Guix source", "configuration and pinned channels are required to create or update a host.")
-	}
-	if !files.IsNull() {
-		diagnostics.Append(files.ElementsAs(ctx, &s.Files, false)...)
-	}
-	for name := range s.Files {
-		if !guix.ValidSourcePath(name) {
-			diagnostics.AddError("Invalid source file", fmt.Sprintf("Invalid or reserved relative path %q.", name))
-		}
-	}
-	return s, diagnostics
 }
 
 type SSHModel struct {

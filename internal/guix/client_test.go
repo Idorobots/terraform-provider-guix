@@ -125,7 +125,7 @@ func TestOptionalImageType(t *testing.T) {
 			t.Run(configuration+"/"+imageType, func(t *testing.T) {
 				stopped := errors.New("stop before building")
 				runner := runnerFunc(func(_ context.Context, dir, _ string, args ...string) (string, string, error) {
-					contents, err := os.ReadFile(filepath.Join(dir, "configuration.scm"))
+					contents, err := os.ReadFile(filepath.Join(dir, "specification.scm"))
 					if err != nil || string(contents) != configuration {
 						t.Fatalf("configuration was not preserved: %v", err)
 					}
@@ -178,7 +178,7 @@ func TestPinnedDeploymentAndWorkspaceCleanup(t *testing.T) {
 }
 
 func TestSourceIsolationAndDigest(t *testing.T) {
-	for _, path := range []string{"../escape", "/absolute", "a/../../escape", "a/../b", "configuration.scm", "channels.scm/nested", "machines.scm", "identity"} {
+	for _, path := range []string{"../escape", "/absolute", "a/../../escape", "a/../b", "specification.scm", "configuration.scm", "channels.scm/nested", "machines.scm", "identity"} {
 		t.Run(path, func(t *testing.T) {
 			_, err := workspace(Source{Files: map[string]string{path: "bad"}})
 			if err == nil {

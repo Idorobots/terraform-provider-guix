@@ -1,6 +1,7 @@
 resource "guix_host" "server" {
-  hostname = "server.local"
-  image    = guix_image.server
+  hostname  = "server.local"
+  blueprint = guix_blueprint.server
+  system    = "x86_64-linux"
 
   ssh = {
     user        = "root"

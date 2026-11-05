@@ -52,10 +52,10 @@ func secretFilesSchema() schema.MapNestedAttribute {
 	}
 }
 
-func imageSecretsSchema() schema.SingleNestedAttribute {
+func blueprintSecretsSchema() schema.SingleNestedAttribute {
 	return schema.SingleNestedAttribute{
 		Optional:            true,
-		MarkdownDescription: "Secret file descriptor, normally guix_secrets.<name>. Records dependencies and sensitive file contents only. This version does not modify the image or install files.",
+		MarkdownDescription: "Secret file descriptor, normally guix_secrets.<name>. Records dependencies and sensitive file contents only. Consuming leaves do not yet install these files.",
 		Attributes: map[string]schema.Attribute{
 			"id":    schema.StringAttribute{Required: true, MarkdownDescription: "Secret descriptor resource identity."},
 			"files": secretFilesSchema(),
@@ -69,7 +69,7 @@ func (*SecretsResource) Metadata(_ context.Context, req resource.MetadataRequest
 }
 func (*SecretsResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "A logical collection of private files for image or host provisioning. Pass this resource to guix_image.secrets to record dependencies. This version only records descriptors: it neither installs files nor contacts hosts, and has no dependency on SOPS or age. Terraform state contains the file contents.",
+		MarkdownDescription: "A logical collection of private files for provisioning. Pass this resource to guix_blueprint.secrets to record dependencies. This version only records descriptors: it neither installs files nor contacts hosts, and has no dependency on SOPS or age. Terraform state contains the file contents.",
 		Attributes: map[string]schema.Attribute{
 			"id":    computedString("Stable identity of the secret file collection.", true),
 			"files": secretFilesSchema(),

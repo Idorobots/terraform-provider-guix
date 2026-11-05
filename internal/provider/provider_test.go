@@ -147,7 +147,7 @@ func TestProviderSchema(t *testing.T) {
 			t.Fatal(diagnostic.Detail)
 		}
 	}
-	for _, name := range []string{"guix_image", "guix_host", "guix_key_pair", "guix_secrets"} {
+	for _, name := range []string{"guix_blueprint", "guix_image", "guix_host", "guix_key_pair", "guix_secrets"} {
 		if response.ResourceSchemas[name] == nil {
 			t.Fatalf("missing %s", name)
 		}
@@ -165,8 +165,8 @@ func hostState(t *testing.T, r *HostResource) tfsdk.State {
 		t.Fatal("SSH schema is not an object")
 	}
 	model := HostModel{
-		Image: testHostImage(t),
-		ID:    types.StringValue("node.local"), Hostname: types.StringValue("node.local"),
+		Blueprint: testBlueprint(t), System: types.StringValue("aarch64-linux"),
+		ID: types.StringValue("node.local"), Hostname: types.StringValue("node.local"),
 		SSH:      types.ObjectNull(sshType.AttrTypes),
 		Timeouts: types.ObjectValueMust(map[string]attr.Type{"create": types.StringType, "read": types.StringType, "update": types.StringType}, map[string]attr.Value{"create": types.StringNull(), "read": types.StringValue("5ms"), "update": types.StringNull()}),
 		IPv4:     types.StringValue("192.0.2.1"), SystemPath: types.StringValue("old"), DeployedSystem: types.StringValue("desired"), DeploymentRevision: types.StringValue("digest"),
@@ -221,17 +221,16 @@ provider "guix" {
 }
 resource "guix_host" "controller" {
   hostname = "controller.local"
-  image = {
-    id = "controller-image"
-    artifact_path = "/tmp/controller.img"
-    configuration = %q
+  blueprint = {
+    os = %q
     channels = "pinned"
-    system = "x86_64-linux"
   }
 }
 resource "guix_image" "worker" {
-  configuration = guix_host.controller.ipv4_address
-  channels = "pinned"
+  blueprint = {
+    os = guix_host.controller.ipv4_address
+    channels = "pinned"
+  }
 }
 `, client.ArtifactDirectory, configuration)
 	}
@@ -247,7 +246,7 @@ resource "guix_image" "worker" {
 	}
 	testresource.Test(t, testresource.TestCase{ProtoV6ProviderFactories: factories(client), Steps: []testresource.TestStep{
 		{Config: config("v1"), Check: testresource.ComposeTestCheckFunc(testresource.TestCheckResourceAttr("guix_host.controller", "ipv4_address", "192.0.2.1"), check(1, 1))},
-		{ResourceName: "guix_host.controller", ImportState: true, ImportStateId: "controller.local", ImportStateVerify: true, ImportStateVerifyIgnore: []string{"image", "deployment_revision"}},
+		{ResourceName: "guix_host.controller", ImportState: true, ImportStateId: "controller.local", ImportStateVerify: true, ImportStateVerifyIgnore: []string{"blueprint", "system", "deployment_revision"}},
 		{PreConfig: func() { backend.mu.Lock(); backend.addressAfterDeploy = "192.0.2.4"; backend.mu.Unlock() }, Config: config("v2"), Check: testresource.ComposeTestCheckFunc(testresource.TestCheckResourceAttr("guix_host.controller", "ipv4_address", "192.0.2.4"), check(2, 2))},
 		{PreConfig: func() {
 			backend.mu.Lock()
@@ -275,12 +274,9 @@ func TestAccInterruptedHostCreate(t *testing.T) {
 }
 resource "guix_host" "server" {
   hostname = "server.local"
-  image = {
-    id = "server-image"
-    artifact_path = "/tmp/server.img"
-    configuration = "desired"
+  blueprint = {
+    os = "desired"
     channels = "pinned"
-    system = "x86_64-linux"
   }
 }`
 	testresource.Test(t, testresource.TestCase{ProtoV6ProviderFactories: factories(client), Steps: []testresource.TestStep{
@@ -296,7 +292,7 @@ resource "guix_host" "server" {
 	}})
 }
 
-func TestAccHostImageLifecycle(t *testing.T) {
+func TestAccSharedBlueprintLifecycle(t *testing.T) {
 	client, backend := fakeClient(t)
 	config := func(imageConfiguration, system string) string {
 		return fmt.Sprintf(`
@@ -305,25 +301,29 @@ provider "guix" {
   ssh = { host_key = "fake host key", private_key = "fake management key" }
 }
 
-resource "guix_image" "bootstrap" {
-  configuration = %q
+resource "guix_blueprint" "server" {
+  os = %q
   channels = "pinned"
-  system = %q
   source_files = { asset = "image asset" }
+}
+resource "guix_image" "bootstrap" {
+  blueprint = guix_blueprint.server
+  system = %q
 }
 resource "guix_host" "server" {
   hostname = "server.local"
-  image = guix_image.bootstrap
+  blueprint = guix_blueprint.server
+  system = %q
 }
-`, client.ArtifactDirectory, imageConfiguration, system)
+`, client.ArtifactDirectory, imageConfiguration, system, system)
 	}
 	check := func(configuration, channels, system string, files map[string]string, builds, deployments int) testresource.TestCheckFunc {
 		return func(state *terraform.State) error {
 			host := state.RootModule().Resources["guix_host.server"].Primary.Attributes
 			image := state.RootModule().Resources["guix_image.bootstrap"].Primary.Attributes
-			want := desired(guix.Source{Configuration: configuration, Channels: channels, System: system, Files: files})
-			if host["id"] != "server.local" || host["image.system"] != system || host["deployed_system"] != want || host["image.id"] != image["id"] || host["image.artifact_path"] != image["artifact_path"] {
-				return fmt.Errorf("unexpected host image state: %v; desired system %s", host, want)
+			want := desired(guix.Source{Kind: "os", Configuration: configuration, Channels: channels, System: system, Files: files})
+			if host["id"] != "server.local" || host["system"] != system || host["deployed_system"] != want || host["blueprint.id"] != image["blueprint.id"] {
+				return fmt.Errorf("unexpected host blueprint state: %v; desired system %s", host, want)
 			}
 			backend.mu.Lock()
 			defer backend.mu.Unlock()
@@ -352,22 +352,26 @@ provider "guix" {
   artifact_directory = %q
   ssh = { host_key = "fake host key", private_key = "fake management key" }
 }
-resource "guix_image" "bootstrap" {
-  configuration = "system"
+resource "guix_blueprint" "server" {
+  os = "system"
   channels = "pinned"
+}
+resource "guix_image" "bootstrap" {
+  blueprint = guix_blueprint.server
   system = "aarch64-linux"
   %s
 }
 resource "guix_host" "server" {
   hostname = "server.local"
-  image = guix_image.bootstrap
+  blueprint = guix_blueprint.server
+  system = "aarch64-linux"
 }
 `, client.ArtifactDirectory, target)
 	}
 	check := func(target string, builds, deployments int) testresource.TestCheckFunc {
 		return func(state *terraform.State) error {
 			image := state.RootModule().Resources["guix_image.bootstrap"].Primary.Attributes
-			source := guix.Source{Configuration: "system", Channels: "pinned", System: "aarch64-linux"}
+			source := guix.Source{Kind: "os", Configuration: "system", Channels: "pinned", System: "aarch64-linux"}
 			if image["input_digest"] != source.ImageDigest(target) {
 				return fmt.Errorf("incorrect image digest: %s", image["input_digest"])
 			}
@@ -398,8 +402,7 @@ func TestAccOptionalImageType(t *testing.T) {
 		return fmt.Sprintf(`
 provider "guix" { artifact_directory = %q }
 resource "guix_image" "server" {
-  configuration = "(image ...)"
-  channels = "pinned"
+  blueprint = { image = "(image ...)", channels = "pinned" }
   %s
 }
 `, client.ArtifactDirectory, option)
@@ -464,8 +467,7 @@ func TestImageRootOwnership(t *testing.T) {
 	var schemaResponse resource.SchemaResponse
 	r.Schema(t.Context(), resource.SchemaRequest{}, &schemaResponse)
 	state := tfsdk.State{Schema: schemaResponse.Schema}
-	model := ImageModel{ID: types.StringValue("11111111111111111111111111111111"), ArtifactPath: types.StringValue(first), Configuration: types.StringValue("same"), Channels: types.StringValue("pinned"), System: types.StringValue("x86_64-linux"), SourceFiles: types.MapNull(types.StringType), ImageType: types.StringValue("efi-raw"), StorePath: types.StringValue("unused"), SHA256: types.StringValue("unused"), InputDigest: types.StringValue("unused"), BuildTimeout: types.StringValue("2h")}
-	model.Secrets = types.ObjectNull(imageSecretsSchema().GetType().(types.ObjectType).AttrTypes)
+	model := ImageModel{ID: types.StringValue("11111111111111111111111111111111"), ArtifactPath: types.StringValue(first), Blueprint: testBlueprint(t), System: types.StringValue("x86_64-linux"), ImageType: types.StringValue("efi-raw"), StorePath: types.StringValue("unused"), SHA256: types.StringValue("unused"), InputDigest: types.StringValue("unused"), BuildTimeout: types.StringValue("2h")}
 	if diagnostics := state.Set(t.Context(), model); diagnostics.HasError() {
 		t.Fatal(diagnostics)
 	}

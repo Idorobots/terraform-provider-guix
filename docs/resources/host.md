@@ -14,8 +14,9 @@ A reachable Guix installation discovered via mDNS. Create waits for manual flash
 
 ```terraform
 resource "guix_host" "server" {
-  hostname = "server.local"
-  image    = guix_image.server
+  hostname  = "server.local"
+  blueprint = guix_blueprint.server
+  system    = "x86_64-linux"
 
   ssh = {
     user        = "root"
@@ -36,12 +37,13 @@ resource "guix_host" "server" {
 
 ### Required
 
+- `blueprint` (Attributes) Shared configuration descriptor, normally guix_blueprint.<name>. Contains optional OS, image and machine specifications, pinned channels, supporting sources and secret descriptors. Architecture and operation settings belong to this leaf. (see [below for nested schema](#nestedatt--blueprint))
 - `hostname` (String) mDNS hostname ending in .local. Changing it replaces the tracked host.
-- `image` (Attributes) Guix image object, normally guix_image.<name>. Defines the host's configuration, channels, target system, supporting files, image identity and manual commissioning file path. Image changes reconcile the host in place. (see [below for nested schema](#nestedatt--image))
 
 ### Optional
 
 - `ssh` (Attributes) SSH settings overriding the provider defaults. Management private keys authenticate connections; host_key pins the server identity. (see [below for nested schema](#nestedatt--ssh))
+- `system` (String) Guix native build system; defaults to x86_64-linux. Foreign-system builds require emulation or offloading. This does not request cross-compilation.
 - `timeouts` (Attributes) Operation deadlines. Defaults: create 45m, read 30s, update 30m. An unreachable host is absent after the read deadline. (see [below for nested schema](#nestedatt--timeouts))
 
 ### Read-Only
@@ -52,20 +54,42 @@ resource "guix_host" "server" {
 - `ipv4_address` (String) Currently discovered IPv4 address. Unknown during configuration changes because deployment can change networking.
 - `system_path` (String) Currently observed /run/current-system store path.
 
-<a id="nestedatt--image"></a>
-### Nested Schema for `image`
+<a id="nestedatt--blueprint"></a>
+### Nested Schema for `blueprint`
 
 Required:
 
-- `artifact_path` (String) Image file for manual flashing and booting.
-- `channels` (String) Pinned channels Scheme source.
-- `configuration` (String) Scheme source evaluating to an operating-system or image specification. Deployment uses the image's embedded operating system when applicable.
-- `id` (String) Image resource identity.
-- `system` (String) Host target architecture.
+- `channels` (String) Pinned channels Scheme source, normally produced by guix describe -f channels. Used with guix time-machine.
 
 Optional:
 
-- `source_files` (Map of String) Supporting source files.
+- `id` (String) Blueprint resource identity. Normally supplied by guix_blueprint.<name>; not a build input.
+- `image` (String) Scheme source evaluating to a Guix image record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
+- `machine` (String) Scheme source evaluating to a Guix machine record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
+- `os` (String) Scheme source evaluating to a Guix operating-system record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
+- `secrets` (Attributes) Secret file descriptor, normally guix_secrets.<name>. Records dependencies and sensitive file contents only. Consuming leaves do not yet install these files. (see [below for nested schema](#nestedatt--blueprint--secrets))
+- `source_files` (Map of String) Public supporting files keyed by normalized relative path, including Scheme modules, local assets and encrypted documents. Provider filenames are reserved.
+
+<a id="nestedatt--blueprint--secrets"></a>
+### Nested Schema for `blueprint.secrets`
+
+Required:
+
+- `files` (Attributes Map) Files keyed by absolute destination path. Contents are sensitive and remain outside the Guix source bundle. Files are currently descriptors only; no installation is performed. Future installation defaults to root ownership. (see [below for nested schema](#nestedatt--blueprint--secrets--files))
+- `id` (String) Secret descriptor resource identity.
+
+<a id="nestedatt--blueprint--secrets--files"></a>
+### Nested Schema for `blueprint.secrets.files`
+
+Required:
+
+- `content` (String, Sensitive) File contents, retained as sensitive Terraform state.
+
+Optional:
+
+- `mode` (String) Unix file mode for future installation; defaults to 0600.
+
+
 
 
 <a id="nestedatt--ssh"></a>

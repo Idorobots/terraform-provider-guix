@@ -17,17 +17,25 @@ func TestAccSecretsAttachment(t *testing.T) {
 	client, backend := fakeClient(t)
 	config := func(content, attachment string) string {
 		return fmt.Sprintf(`
-provider "guix" { artifact_directory = %q }
+provider "guix" {
+  artifact_directory = %q
+  ssh = { host_key = "host key", private_key = "management key" }
+}
 resource "guix_secrets" "server" {
   files = {
     "/etc/example/key" = { content = %q }
   }
 }
-resource "guix_image" "server" {
-  configuration = "system"
+resource "guix_blueprint" "server" {
+  os = "system"
   channels = "pinned"
   source_files = { "public" = "public data" }
   %s
+}
+resource "guix_image" "server" { blueprint = guix_blueprint.server }
+resource "guix_host" "server" {
+  hostname = "server.local"
+  blueprint = guix_blueprint.server
 }
 `, client.ArtifactDirectory, content, attachment)
 	}
@@ -39,18 +47,18 @@ resource "guix_image" "server" {
 			if identity == "" {
 				identity = secrets["id"]
 			}
-			if identity == "" || secrets["id"] != identity || image["secrets.id"] != identity || image["secrets.files./etc/example/key.content"] != content || image["secrets.files./etc/example/key.mode"] != "0600" {
+			if identity == "" || secrets["id"] != identity || image["blueprint.secrets.id"] != identity || image["blueprint.secrets.files./etc/example/key.content"] != content || image["blueprint.secrets.files./etc/example/key.mode"] != "0600" {
 				return fmt.Errorf("secret attachment or stable identity was not preserved")
 			}
 			// Private descriptors must not influence the public Guix build source.
-			source := guix.Source{Configuration: "system", Channels: "pinned", System: "x86_64-linux", Files: map[string]string{"public": "public data"}}
+			source := guix.Source{Kind: "os", Configuration: "system", Channels: "pinned", System: "x86_64-linux", Files: map[string]string{"public": "public data"}}
 			if image["input_digest"] != source.Digest() {
 				return fmt.Errorf("secret content entered the Guix build source")
 			}
 			backend.mu.Lock()
 			defer backend.mu.Unlock()
-			if backend.builds != 1 {
-				return fmt.Errorf("descriptor change rebuilt image: %d builds", backend.builds)
+			if backend.builds != 1 || backend.deployments != 1 {
+				return fmt.Errorf("descriptor change rebuilt/redeployed: %d builds, %d deployments", backend.builds, backend.deployments)
 			}
 			return nil
 		}
@@ -63,7 +71,7 @@ resource "guix_image" "server" {
 		}}, Check: check("private-v2")},
 		{Config: config("private-v2", "secrets = guix_secrets.server"), PlanOnly: true, ExpectNonEmptyPlan: false},
 		{Config: config("private-v2", ""), Check: func(state *terraform.State) error {
-			if state.RootModule().Resources["guix_image.server"].Primary.Attributes["secrets.id"] != "" {
+			if state.RootModule().Resources["guix_image.server"].Primary.Attributes["blueprint.secrets.id"] != "" {
 				return fmt.Errorf("removed attachment retained")
 			}
 			return nil

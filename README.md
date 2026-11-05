@@ -6,10 +6,11 @@ the default CLI for development, documentation generation, and deployment.
 
 | Resource | Purpose |
 | --- | --- |
+| [`guix_blueprint`](docs/resources/blueprint.md) | Share optional OS, image and machine specifications, pinned channels, sources and secret descriptors |
 | [`guix_image`](docs/resources/image.md) | Build an immutable bootable image and retain it with an independent Guix GC root |
 | [`guix_host`](docs/resources/host.md) | Discover a running installation, expose its IPv4 address, and reconcile its configuration |
 | [`guix_key_pair`](docs/resources/key_pair.md) | Name and normalize a management public key for Guix SSH authorization |
-| [`guix_secrets`](docs/resources/secrets.md) | Describe sensitive files and attach their dependencies to an image; installation is deferred |
+| [`guix_secrets`](docs/resources/secrets.md) | Describe sensitive files and attach their dependencies to a blueprint; installation is deferred |
 
 ## Requirements
 
@@ -26,10 +27,11 @@ the default CLI for development, documentation generation, and deployment.
 
 ## Workflow
 
-1. Supply Scheme source using `file()` or `templatefile()`, and pin channels to
-   commits (for example, `guix describe -f channels > channels-lock.scm`).
-2. Apply an image and host configuration with `tofu apply`. OpenTofu builds the image and then
-   waits for the host to appear.
+1. Put Scheme specifications, supporting files, and pinned channels in a
+   `guix_blueprint` (for example, `guix describe -f channels > channels-lock.scm`).
+2. Pass `blueprint = guix_blueprint.<name>` independently to images and hosts.
+   For bootstrap, add `depends_on = [guix_image.<name>]` to the host when image
+   creation should finish before the host starts waiting. Run `tofu apply`.
 3. While the apply is waiting, find the image GC root under
    `.guix-artifacts/<name>/<image-id>/image` (or the configured `artifact_directory`).
    Inspect `ls -l .guix-artifacts/controller/*/image` in another terminal, manually flash the
@@ -42,26 +44,25 @@ the default CLI for development, documentation generation, and deployment.
 The complete [two-host example](examples/two-hosts) combines `tls_private_key`,
 Guix SSH authorization, image builds, and an IP-dependent worker configuration.
 
-Plans for new hosts print a `Manual commissioning required` warning in the normal
-console output, including during the planning phase of `tofu apply`. Set
-`image = guix_image.<name>` on the host to include the image file to flash.
-If the image has not been built yet, the warning explains that its path is known
-after the build; use the GC-root location described above.
-No logging environment variable is required. Existing-host updates and destroy
-plans do not emit this create-time warning.
+Plans for new hosts print a `Manual commissioning required` warning describing
+the required mDNS and SSH access. No logging environment variable is required.
+Existing-host updates and destroy plans do not emit this create-time warning.
+During apply, the provider also logs host commissioning instructions at INFO
+level (`TF_LOG_PROVIDER=INFO`). Image paths are available on the image resource
+and under the GC-root location above.
 
-The required `image = guix_image.<name>` object is the host's sole system-definition
-input. It supplies the configuration, pinned channels, target architecture,
-supporting files, image identity, and commissioning path. Update those values on
-the image resource to change the desired host system. Image changes reconcile the
-host in place.
-
-During apply, the provider also logs the image path and manual flashing/boot
-instructions at INFO level (`TF_LOG_PROVIDER=INFO`), once the image path is known.
+Images and hosts are independent consumers of the blueprint. A host can be
+managed without building an image, and an image can be built without declaring
+a host. Neither leaf accepts its own channels or source files, and a host never
+accepts an image object. Both leaves have their own `system` attribute, defaulting
+to `x86_64-linux`; set it explicitly for other architectures.
 
 ### Lifecycle and state
 
-- **Images are immutable.** Source, channels, supporting files, image type, or
+- **Blueprints are mutable descriptors.** They have stable identities, and do not
+  evaluate Scheme or perform builds or deployments. All three specifications may
+  be absent; each consumer validates its own requirements.
+- **Images are immutable.** Selected source, channels, supporting files, image type, or
   target-system changes replace the image resource. Image bytes live in the Guix
   store; OpenTofu state contains paths, the checksum and source digest.
 - Each image resource owns a distinct GC-root symlink, even when Guix deduplicates
@@ -73,9 +74,12 @@ instructions at INFO level (`TF_LOG_PROVIDER=INFO`), once the image path is know
   unreachable host is removed from state. The next apply waits for it again and
   reconciles it. Authentication errors, host-key mismatches, malformed responses,
   cancellation, and discovery-tool failures return errors and preserve state.
-- Changes to the host's `image` definition use
-  `guix deploy`. Image references establish ordering/provenance and never flash
-  disks.
+- Changes to the host's selected blueprint specification, channels, supporting
+  files, architecture or SSH configuration reconcile it in place with `guix deploy`.
+- Unused blueprint specifications, blueprint identity, and descriptor-only secret
+  changes update leaf state without rebuilding images or reconciling hosts.
+  Shared source files remain tracked by both consumers, even if a particular
+  expression does not load every file.
 - Refresh records both the observed system and the last successful deployment.
   An out-of-band rollback schedules reconciliation on the next apply.
 - Destroying a host only forgets it. It does not shut down, wipe, or uninstall it.
@@ -104,7 +108,7 @@ are mode 0600 and removed after the operation.
 
 `guix_secrets` accepts a map of absolute file destinations to objects containing
 sensitive `content` and an optional `mode` (default `0600`). Attach the whole
-resource with `secrets = guix_secrets.<name>` on an image. These descriptors are
+resource with `secrets = guix_secrets.<name>` on a blueprint. These descriptors are
 stored in Terraform state and never merged into `source_files` or passed to Guix
 build commands. The resource has no SOPS or age dependency.
 
@@ -114,12 +118,29 @@ the immutable image. Destroy forgets descriptors; it does not remove remote file
 Keep any external ciphertext preparation in a separate module and pass its
 encrypted output explicitly through `source_files`.
 
-`configuration` is Scheme source evaluating to either a Guix `operating-system`
-or an `image` containing an operating system. Supply raw source, `file()`, or
-`templatefile()`; literal filenames are not loaded automatically. The provider
-writes the source to `configuration.scm` and uses the pinned Guix version to
-evaluate it. Image creation uses the supplied specification, and host system
-builds/deployment use its embedded OS when the result is an image.
+Blueprint `os`, `image`, and `machine` are independently optional Scheme source
+strings evaluating to their respective Guix record types. Supply raw source,
+`file()`, `templatefile()`, or an explicit `(load "...")`; literal filenames are
+not loaded automatically. Each operation evaluates only its selected expression
+using the pinned Guix version:
+
+| Consumer | Preferred specification | Fallback | Missing-input error |
+| --- | --- | --- | --- |
+| `guix_image` | `blueprint.image` | `blueprint.os` | Neither is provided |
+| `guix_host` | `blueprint.machine` | `blueprint.os` | Neither is provided |
+
+A wrong result type is an error, not a reason to fall back. Unknown preferred
+values defer selection until resolved. Known missing inputs fail planning;
+Scheme result types are checked when the selected expression is evaluated.
+
+A host using `machine` builds the machine's operating system for comparison and
+deploys a single inherited machine record. The machine must use Guix's managed
+SSH environment. Its deployment policies, such as `build-locally?`, `authorize?`
+and `allow-downgrades?`, are preserved. The host's discovered address, effective
+host/provider SSH settings and leaf `system` override the corresponding machine
+fields; a supplied SSH session is cleared so those overrides take effect. With
+`os`, the provider constructs the SSH machine record itself. Keep private keys
+in SSH settings or secret descriptors rather than Scheme source strings.
 
 `image_type` is optional. With an OS result, omitting it uses the pinned Guix
 version's default image type; setting it passes `--image-type` to Guix. With an
@@ -131,7 +152,7 @@ implicit EFI behavior for OS specifications, set `image_type = "efi-raw"` explic
 assets participate in OpenTofu planning. The provider creates an isolated
 workspace and adds it to the Guix load path. Relative assets should use Guix
 `local-file`. All needed files must be included explicitly; paths outside the
-bundle are not automatically tracked. The top-level names `configuration.scm`,
+bundle are not automatically tracked. The top-level names `specification.scm`, `configuration.scm`,
 `channels.scm`, `machines.scm`, and `identity` are reserved. Pin every channel to a
 commit to make builds and deployments reproducible.
 
@@ -139,10 +160,13 @@ For a bundled file that returns an image or an OS, preserve its relative assets
 with an explicit load:
 
 ```hcl
-configuration = "(load \"hosts/server.scm\")"
-source_files = {
-  "hosts/server.scm" = file("${path.module}/hosts/server.scm")
-  # Include the file's supporting modules and assets at their relative paths.
+resource "guix_blueprint" "server" {
+  os       = "(load \"hosts/server.scm\")"
+  channels = file("${path.module}/channels-lock.scm")
+  source_files = {
+    "hosts/server.scm" = file("${path.module}/hosts/server.scm")
+    # Include supporting modules and assets at their relative paths.
+  }
 }
 ```
 
@@ -176,33 +200,37 @@ type based on Guix's EFI image:
 ```
 
 ```hcl
+resource "guix_blueprint" "homelab" {
+  os       = file("${path.module}/system.scm")
+  channels = file("${path.module}/channels-lock.scm")
+}
+
 resource "guix_image" "homelab" {
-  configuration = file("${path.module}/system.scm")
-  channels      = file("${path.module}/channels-lock.scm")
-  image_type    = "homelab-efi-raw"
-  system        = "aarch64-linux"
+  blueprint  = guix_blueprint.homelab
+  image_type = "homelab-efi-raw"
+  system     = "aarch64-linux"
 }
 ```
 
 Guix discovers the exported types and platforms from the pinned channel profile.
 `image_type` matches an image-type record's `name`, not its Scheme binding name;
 `system` matches a platform record's `system` field. Built-in systems such as
-`aarch64-linux` need no custom platform. `configuration` defines the operating
-system or image, and `source_files` supplies supporting modules and assets.
+`aarch64-linux` need no custom platform. The blueprint's specifications define
+the operating system, image or machine, and its `source_files` supplies supporting modules and assets.
 Adding files to `source_files` makes them importable through `-L`, but does not
 register them for image/platform discovery inside a pinned channel profile.
 
 Publish definition changes to the channel and update its pinned commit to use
-them. Changes to `channels` replace the image. Hosts using
-`image = guix_image.homelab` inherit those same channels for system builds and
-deployment.
+them. Changes to blueprint `channels` replace consuming images and reconcile
+consuming hosts using those same channels.
 
 ### Cross-compiling images
 
 Set `target = "aarch64-linux-gnu"` on `guix_image` to pass Guix's `--target`
 for the image build instead of `--system`. Guix builds the cross tools for the
-runner's native architecture. Keep `system = "aarch64-linux"` to identify the
-host architecture. Changing `target` replaces the image.
+runner's native architecture. Set `system = "aarch64-linux"` independently on
+the host leaf for native host system builds and deployment. Changing `target`
+replaces the image.
 
 The target applies only to image creation. Host reconciliation and `guix deploy`
 still build for `system` and require a native builder, offload, or emulation for
@@ -216,11 +244,24 @@ Configure provider-level SSH credentials and the host's pinned key, then run:
 tofu import guix_host.controller controller.local
 ```
 
-The host must be reachable. Configure the required `image = guix_image.<name>`
-object in the host block. Import adopts the observed system but does not infer
-which image defines it; the image object is populated from configuration on the
-next apply. Image artifacts and logical key pairs are created from configuration
-rather than imported.
+The host must be reachable. Configure the required `blueprint = guix_blueprint.<name>`
+object and the correct `system` in the host block. Import adopts the observed
+system but does not infer its blueprint; the blueprint is populated from
+configuration on the next apply. Image artifacts and logical descriptors are
+created from configuration rather than imported.
+
+### Migrating from image-owned configuration
+
+This is a breaking schema change. Move image `configuration`, `channels`,
+`source_files` and `secrets` to a new `guix_blueprint`. Rename `configuration` to
+`os` or `image` according to its result type. If it returned an image and the
+blueprint is also consumed by a host, supply a separate `os` or `machine`
+expression for that host. Set `blueprint` on both leaves, replace the host's old
+`image` attribute, and set its `system` explicitly when not `x86_64-linux`.
+Existing pre-blueprint leaf state is not automatically migrated; retain a state
+backup and adopt existing hosts through hostname import after removing their old
+state entries. Image artifacts require recreation; removing an old image state
+entry alone does not release its GC root.
 
 ## Development
 
@@ -271,8 +312,8 @@ an image or contacting a host, run:
 GUIX_EVALUATION=1 go test ./internal/guix -run Specification
 ```
 
-These checks exercise inline and file-loaded OS/image configurations, relative
-assets, and invalid specification diagnostics. They use the installed Guix; the
+These checks exercise inline and file-loaded OS/image/machine specifications,
+relative assets, connection overrides, policy inheritance and invalid specification diagnostics. They use the installed Guix; the
 opt-in full integration test uses the pinned channels supplied by the operator.
 
 For local OpenTofu development, configure a CLI development override in a
