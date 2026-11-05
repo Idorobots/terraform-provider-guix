@@ -1,13 +1,13 @@
 # Guix Provider for OpenTofu
 
-`SpartanWorks/guix` builds Guix System images and manages manually commissioned
-machines using mDNS discovery and pinned `guix deploy` operations. OpenTofu is
-the default CLI for development, documentation generation, and deployment.
+`SpartanWorks/guix` builds Guix System images and manages machines using mDNS discovery and `guix deploy` operations.
+
+This project is vibe-coded. I strongly advise against using it for anything serious until further notice.
 
 | Resource | Purpose |
 | --- | --- |
-| [`guix_blueprint`](docs/resources/blueprint.md) | Share optional OS, image and machine specifications, pinned channels, sources and secret descriptors |
-| [`guix_image`](docs/resources/image.md) | Build an immutable bootable image and retain it with an independent Guix GC root |
+| [`guix_blueprint`](docs/resources/blueprint.md) | OS, image and machine specifications, pinned channels, sources and secret descriptors |
+| [`guix_image`](docs/resources/image.md) | Build an immutable bootable image |
 | [`guix_host`](docs/resources/host.md) | Discover a running installation, expose its IPv4 address, and reconcile its configuration |
 | [`guix_key_pair`](docs/resources/key_pair.md) | Name and normalize a management public key for Guix SSH authorization |
 | [`guix_secrets`](docs/resources/secrets.md) | Describe sensitive files and attach their dependencies to a blueprint; installation is deferred |
