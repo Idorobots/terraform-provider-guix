@@ -144,6 +144,9 @@ func (f *fakeBackend) ProvisionImage(ctx context.Context, _ guix.Source, secrets
 	defer f.mu.Unlock()
 	f.imageProvisions++
 	if f.provisionError != nil {
+		if err := os.WriteFile(output, []byte("partial private image"), 0600); err != nil {
+			return "", err
+		}
 		return "", f.provisionError
 	}
 	body, err := os.ReadFile(input)

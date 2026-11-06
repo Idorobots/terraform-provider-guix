@@ -159,6 +159,11 @@ activation hooks, service restarts, system reconfiguration or boot-time processi
 Payloads use separate mode-0700 workspaces and mode-0600 files. They are never
 embedded in Scheme build expressions, command arguments or public source bundles.
 
+If `guix secrets image` fails, the provider retains the clean image and emits a
+warning that the secrets were not provisioned. You must manually install the files
+declared in `blueprint.secrets` at their configured destinations before booting.
+Cancellation and failed running-host provisioning remain errors.
+
 Files are root-owned with declared modes; new private parent directories use
 0700. Image writes reject symlink parents/leaves. Running-host provisioning uses
 the effective machine's SSH connection, ordinary shell/coreutils operations and

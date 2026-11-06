@@ -52,12 +52,12 @@ func (*ImageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 	attrs["id"] = computedString("Unique resource identity, owning an independent image GC root.", true)
 	attrs["image_type"] = schema.StringAttribute{Optional: true, MarkdownDescription: "Guix image type for an operating-system configuration, including types exported by pinned channels. Omit to use the pinned Guix default. An image specification determines its own layout, following native Guix behavior.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("nonempty string")}}
 	attrs["target"] = schema.StringAttribute{Optional: true, MarkdownDescription: "GNU target triplet for cross-compiling the image, for example aarch64-linux-gnu. Builds use the runner's native system; host system builds and deployments still use system.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("nonempty string")}}
-	attrs["artifact_path"] = computedString("Flashable image under artifact_directory/<name>/<id>/image. A private mode-0600 copy when secrets are attached; otherwise a symlink to the clean image.", false)
+	attrs["artifact_path"] = computedString("Flashable image under artifact_directory/<name>/<id>/image. A private mode-0600 copy after secret provisioning; otherwise a symlink to the clean image. A provisioning warning means the declared secrets must be installed manually before booting.", false)
 	attrs["store_path"] = computedString("Clean immutable Guix store image path, retained by the adjacent base-image GC root. Contains no provisioned secrets.", false)
 	attrs["sha256"] = computedString("SHA256 checksum of the image bytes.", false)
 	attrs["input_digest"] = computedString("Digest of the configuration, channels, system, cross target and source files.", false)
 	attrs["build_timeout"] = schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("2h"), MarkdownDescription: "Image build deadline.", Validators: []validator.String{stringCheck("positive duration")}}
-	resp.Schema = schema.Schema{MarkdownDescription: "Build a Guix System image with pinned channels, then provision attached private files outside the store using guix secrets image. FUSE mounts are preferred; Polkit authentication is requested when FUSE is unavailable. Flash and boot the final artifact manually. Destroy deletes the owned private copy and releases its clean-image GC root.", Attributes: attrs}
+	resp.Schema = schema.Schema{MarkdownDescription: "Build a Guix System image with pinned channels, then provision attached private files outside the store using guix secrets image. FUSE mounts are preferred; Polkit authentication is requested when FUSE is unavailable. If provisioning fails, retain the clean image and warn that the declared secrets must be installed manually before booting. Flash and boot the final artifact manually. Destroy deletes the owned private copy and releases its clean-image GC root.", Attributes: attrs}
 }
 func (r *ImageResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
@@ -121,7 +121,17 @@ func (r *ImageResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 	if hasSecrets(m.Blueprint) {
-		checksum, err = r.client.Guix.ProvisionImage(ctx, s, secrets, m.ImageType.ValueString(), m.Target.ValueString(), store, root)
+		var provisionedChecksum string
+		provisionedChecksum, err = r.client.Guix.ProvisionImage(ctx, s, secrets, m.ImageType.ValueString(), m.Target.ValueString(), store, root)
+		if err == nil {
+			checksum = provisionedChecksum
+		} else if ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			resp.Diagnostics.AddWarning("Image secrets not provisioned", fmt.Sprintf("Secrets were not provisioned in the image. You must manually install the files declared in blueprint.secrets at their configured destinations before booting.\n\n%s", err))
+			// Discard any failed output and retain the clean image.
+			if err = os.Remove(root); err == nil || errors.Is(err, os.ErrNotExist) {
+				err = os.Symlink(store, root)
+			}
+		}
 	} else {
 		err = os.Symlink(store, root)
 	}
@@ -165,7 +175,7 @@ func (*ImageResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		resp.Diagnostics.AddError("Image reference changed", "The base-image GC root no longer refers to the recorded clean image.")
 		return
 	}
-	if !hasSecrets(m.Blueprint) {
+	if !hasSecrets(m.Blueprint) || info.Mode()&os.ModeSymlink != 0 {
 		resolved, err := filepath.EvalSymlinks(m.ArtifactPath.ValueString())
 		if err != nil || resolved != m.StorePath.ValueString() || info.Mode()&os.ModeSymlink == 0 {
 			resp.Diagnostics.AddError("Invalid image artifact", "Expected a symlink to the clean image.")

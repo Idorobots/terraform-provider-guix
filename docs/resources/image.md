@@ -3,12 +3,12 @@
 page_title: "guix_image Resource - guix"
 subcategory: ""
 description: |-
-  Build a Guix System image with pinned channels, then provision attached private files outside the store using guix secrets image. FUSE mounts are preferred; Polkit authentication is requested when FUSE is unavailable. Flash and boot the final artifact manually. Destroy deletes the owned private copy and releases its clean-image GC root.
+  Build a Guix System image with pinned channels, then provision attached private files outside the store using guix secrets image. FUSE mounts are preferred; Polkit authentication is requested when FUSE is unavailable. If provisioning fails, retain the clean image and warn that the declared secrets must be installed manually before booting. Flash and boot the final artifact manually. Destroy deletes the owned private copy and releases its clean-image GC root.
 ---
 
 # guix_image (Resource)
 
-Build a Guix System image with pinned channels, then provision attached private files outside the store using guix secrets image. FUSE mounts are preferred; Polkit authentication is requested when FUSE is unavailable. Flash and boot the final artifact manually. Destroy deletes the owned private copy and releases its clean-image GC root.
+Build a Guix System image with pinned channels, then provision attached private files outside the store using guix secrets image. FUSE mounts are preferred; Polkit authentication is requested when FUSE is unavailable. If provisioning fails, retain the clean image and warn that the declared secrets must be installed manually before booting. Flash and boot the final artifact manually. Destroy deletes the owned private copy and releases its clean-image GC root.
 
 ## Example Usage
 
@@ -67,7 +67,7 @@ resource "guix_image" "from_image_specification" {
 
 ### Read-Only
 
-- `artifact_path` (String) Flashable image under artifact_directory/<name>/<id>/image. A private mode-0600 copy when secrets are attached; otherwise a symlink to the clean image.
+- `artifact_path` (String) Flashable image under artifact_directory/<name>/<id>/image. A private mode-0600 copy after secret provisioning; otherwise a symlink to the clean image. A provisioning warning means the declared secrets must be installed manually before booting.
 - `id` (String) Unique resource identity, owning an independent image GC root.
 - `input_digest` (String) Digest of the configuration, channels, system, cross target and source files.
 - `sha256` (String) SHA256 checksum of the image bytes.

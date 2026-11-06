@@ -5,8 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/SpartanWorks/terraform-provider-guix/internal/guix"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -121,25 +123,49 @@ func TestProvisioningFailurePreventsDeployment(t *testing.T) {
 	}
 }
 
-func TestImageProvisioningFailureReleasesRoot(t *testing.T) {
+func TestImageProvisioningFailureRequiresManualInstallation(t *testing.T) {
 	client, backend := fakeClient(t)
 	backend.provisionError = errors.New("authentication cancelled")
 	r := &ImageResource{client: client}
 	var response resource.SchemaResponse
 	r.Schema(t.Context(), resource.SchemaRequest{}, &response)
 	plan := tfsdk.Plan{Schema: response.Schema}
-	model := ImageModel{Name: types.StringValue("test"), Blueprint: privateBlueprint(t, types.StringValue("private")), System: types.StringValue("x86_64-linux"), BuildTimeout: types.StringValue("1m")}
+	const secret = "PRIVATE-PAYLOAD-MARKER"
+	model := ImageModel{Name: types.StringValue("test"), Blueprint: privateBlueprint(t, types.StringValue(secret)), System: types.StringValue("x86_64-linux"), BuildTimeout: types.StringValue("1m")}
 	if d := plan.Set(t.Context(), &model); d.HasError() {
 		t.Fatal(d)
 	}
 	created := resource.CreateResponse{State: tfsdk.State{Schema: response.Schema}}
 	r.Create(t.Context(), resource.CreateRequest{Plan: plan}, &created)
-	if !created.Diagnostics.HasError() {
-		t.Fatal("expected provisioning failure")
+	if created.Diagnostics.HasError() || created.Diagnostics.WarningsCount() != 1 {
+		t.Fatalf("expected a manual provisioning warning: %v", created.Diagnostics)
 	}
-	entries, err := os.ReadDir(filepath.Join(client.ArtifactDirectory, "test"))
-	if err != nil || len(entries) != 0 {
-		t.Fatal("failed image left an owned artifact/GC root")
+	detail := created.Diagnostics[0].Detail()
+	for _, expected := range []string{"authentication cancelled", "not provisioned", "manually install", "blueprint.secrets", "before booting"} {
+		if !strings.Contains(detail, expected) {
+			t.Fatalf("warning omitted %q: %s", expected, detail)
+		}
+	}
+	if strings.Contains(detail, secret) {
+		t.Fatal("warning exposed private contents")
+	}
+	if d := created.State.Get(t.Context(), &model); d.HasError() {
+		t.Fatal(d)
+	}
+	root := model.ArtifactPath.ValueString()
+	if resolved, err := filepath.EvalSymlinks(root); err != nil || resolved != model.StorePath.ValueString() {
+		t.Fatal("fallback did not retain the clean image")
+	}
+	if checksum, err := guix.Checksum(t.Context(), root); err != nil || checksum != model.SHA256.ValueString() {
+		t.Fatal("fallback retained the partial image checksum")
+	}
+	if body, err := os.ReadFile(root); err != nil || strings.Contains(string(body), "partial private image") || strings.Contains(string(body), secret) {
+		t.Fatal("fallback artifact contains partially provisioned secrets")
+	}
+	refreshed := resource.ReadResponse{State: created.State}
+	r.Read(t.Context(), resource.ReadRequest{State: created.State}, &refreshed)
+	if refreshed.Diagnostics.HasError() {
+		t.Fatalf("fallback does not survive refresh: %v", refreshed.Diagnostics)
 	}
 }
 
