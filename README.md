@@ -23,12 +23,13 @@ This project is vibe-coded. I strongly advise against using it for anything seri
   management public key authorized. Pin its SSH **host** public key separately.
 - The deployment user is root or has passwordless sudo. Management private keys
   must be unencrypted, supplied as `ssh.private_key` or `ssh.identity_file`.
-- Image provisioning uses FUSE (`/dev/fuse` and a working `fusermount3` or
-  `fusermount`). If unavailable, `pkexec` and a Polkit authentication agent
-  provide the administrator-password prompt. Only the image helper runs elevated.
-- Running hosts provide Guile at `/run/current-system/profile/bin/guile`, as in
-  the default Guix System profile. See the [bundled channel](channel/README.md)
-  for supported image layouts and standalone commands.
+  Secrets provisioning requires an already privileged SSH user.
+- Image provisioning supports ext2/3/4 and Btrfs. Ext filesystems prefer FUSE
+  (`/dev/fuse` and a working `fusermount3` or `fusermount`). Kernel mounting uses
+  `pkexec` with a Polkit authentication agent for unprivileged callers.
+- Install the [Guix secrets channel](channel/README.md) and include it in pinned
+  blueprint channels when provisioning secrets. The extension is required on
+  the runner, not the target. Remote secrets copying uses SSH and coreutils.
 
 ## Workflow
 
@@ -69,7 +70,7 @@ architectures.
   evaluate Scheme or perform builds or deployments. All three specifications may
   be absent; each consumer validates its own requirements.
 - **Images are immutable resources.** Selected source, channels, supporting files,
-  image type, architecture, secret contents or modes replace the image resource.
+  image type, architecture, secrets declarations or file digests replace the image resource.
   The clean base remains in the Guix store; provisioned copies live outside it
   with mode 0600. Secret-only changes reuse the cached base derivation.
 - Each image owns a `base-image` GC-root symlink. Its adjacent `image` is the
@@ -117,13 +118,25 @@ are mode 0600 and removed after the operation.
 
 ### Private file provisioning
 
-`guix_secrets` accepts a map of absolute file destinations to objects containing
-sensitive `content` and an optional `mode` (default `0600`). Attach the whole
-resource with `secrets = guix_secrets.<name>` on a blueprint. These descriptors are
-stored in Terraform state and never merged into `source_files` or passed to Guix
-build commands. The resource has no SOPS or age dependency.
+`guix_secrets.secrets` accepts sensitive Scheme source evaluating to a
+`secrets-configuration` from `(guix secrets)`. Entries are `secret-file` records
+with a destination, source file or inline string/bytevector content, and a mode
+(default `#o600`). Attach the whole resource with `secrets = guix_secrets.<name>`
+on a blueprint. For externally referenced files, supply explicit change triggers:
 
-The provider ships its own [Guix channel](channel/README.md). It invokes
+```hcl
+file_digests = { identity = filesha256("/absolute/path/to/identity") }
+```
+
+Terraform recalculates these digests during planning. Neither the Scheme input
+nor the digests enter `source_files` or public Guix build inputs. Scheme is
+evaluated only during apply. Relative sources and load expressions use the
+Terraform working directory; use `abspath()` in module-local templates. Inline
+secrets remain in sensitive Terraform state. The resource has no SOPS/age dependency.
+
+Install the [Guix secrets channel](channel/README.md) and include it in the
+blueprint's pinned channels. Apply fails with an installation hint if the
+extension is unavailable in that pinned environment. The provider invokes
 `guix secrets image` after the base image is built and `guix secrets deploy`
 before any required host deployment. These commands only install files: no
 activation hooks, service restarts, system reconfiguration or boot-time processing.
@@ -131,12 +144,14 @@ Payloads use separate mode-0700 workspaces and mode-0600 files. They are never
 embedded in Scheme build expressions, command arguments or public source bundles.
 
 Files are root-owned with declared modes; new private parent directories use
-0700. Existing directories retain their metadata, and destination symlinks are
-rejected. Running-host replacements are atomic per file. Removing an attachment
+0700. Image writes reject symlink parents/leaves. Running-host provisioning uses
+the effective machine's SSH connection, ordinary shell/coreutils operations and
+an already privileged user; permission failures are errors. It needs neither
+remote Guile nor a sudo fallback. Replacements are atomic per file. Removing an attachment
 or destroying a descriptor/host does not delete remote files. Files installed
 before a later deployment failure remain installed; retrying re-applies the
-desired files. Provisioning revisions are sensitive state, separate from public
-build digests. Refresh observes the host system, not individual remote secrets.
+desired files. Terraform tracks declaration and file-digest changes through the
+blueprint. Refresh observes the host system, not individual remote secrets.
 Keep external ciphertext preparation in a separate module and pass its encrypted
 output explicitly through `source_files`.
 

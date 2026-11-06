@@ -23,8 +23,8 @@
                   (lambda ()
                     (set-port-encoding! (current-input-port) "UTF-8")
                     (match (read)
-                      ((image offset size files)
-                       (provision-with-mount image offset size files
+                       ((image plan)
+                        (provision-with-mount image plan
                                              #$(file-append util-linux "/bin/mount")
                                              #$(file-append util-linux "/bin/umount")))
                       (_ (error "invalid provisioning request"))))

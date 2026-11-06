@@ -3,9 +3,10 @@
 1. Adapt `system.scm.tftpl` to your hardware, storage layout, boot mode, and
    networking. This example targets x86_64 UEFI systems. Disk labels must match
    the image and the installed system; check them before deployment.
-2. Generate and commit a channel lock:
+2. Install the [Guix secrets channel](../../channel/README.md), then generate and commit a channel lock:
    `guix describe -f channels > channels-lock.scm`. Ensure each channel has a
-   fixed `commit`, rather than only a branch.
+   fixed `commit`, rather than only a branch, and that the secrets channel is
+   included so `guix time-machine` can discover the extension.
 3. Prepare FUSE mounting on the runner, or `pkexec` and a Polkit authentication
    agent. The provider provisions the generated server identities into private
    image copies before they are flashed.

@@ -2,28 +2,58 @@
 (define-module (guix extensions secrets)
   #:use-module (guix ui)
   #:use-module (guix scripts)
-  #:use-module (guix-secrets manifest)
+  #:use-module (guix utils)
+  #:use-module (guix secrets)
+  #:use-module (gnu machine)
+  #:use-module (gnu image)
+  #:use-module (gnu system)
+  #:use-module (gnu system image)
+  #:use-module (guix scripts system)
   #:autoload (guix-secrets image) (provision-image)
   #:autoload (guix-secrets deploy) (deploy-files)
   #:use-module (ice-9 getopt-long)
   #:use-module (ice-9 match)
-  #:export (guix-secrets))
+  #:use-module (srfi srfi-1)
+  #:export (guix-secrets resolve-image load-machines))
 
 (define (show-help)
-  (display "Usage: guix secrets image --manifest=FILE --output=IMAGE [--root-label=LABEL] BASE-IMAGE
-       guix secrets deploy --manifest=FILE --host=HOST --host-key=KEY --identity=FILE
-                           [--user=root] [--port=22]
+  (display "Usage: guix secrets image --secrets=FILE --artifact=IMAGE --output=IMAGE
+                          [--image-type=TYPE] OS-OR-IMAGE.scm
+       guix secrets deploy --secrets=FILE MACHINE.scm...
 
-Install secret files only. No system builds, reconfiguration, service restarts or boot.
-Manifests are data-only JSON: version 1, files array of source/destination/mode.
-Modes default to 0600; files and new private parent directories are root-owned.
-Images use FUSE when available, otherwise request Polkit authentication.
-  -L, --load-path=DIR   add a Guile module search path
+Provision files only. No system builds, reconfiguration or service restarts.
+Secrets files evaluate to a (guix secrets) secrets-configuration record.
+Image root and mount layout come from the declaration. Supports ext2/3/4 and
+Btrfs in raw MBR/GPT artifacts. FUSE is preferred for ext filesystems;
+kernel mounts use Polkit when the caller is unprivileged.
+Deploy uses managed SSH machine configurations and an already privileged user.
+  -L, --load-path=DIR   add a Guile module search path (repeatable)
+      --system=SYSTEM  evaluate declarations for SYSTEM
+      --target=TARGET  evaluate image declarations for cross TARGET
+      --secrets-directory=DIR  base directory for generated secret declarations
   -h, --help            show this help
 "))
 
 (define (required opts name)
   (or (option-ref opts name #f) (error "missing required provisioning option" name)))
+
+(define (resolve-image file type)
+  (let ((spec (read-operating-system file)))
+    (cond ((image? spec) spec)
+          ((operating-system? spec)
+           ;; Guix system image defaults to this type. Use its pinned native
+           ;; constructor, not a private CLI options binding (which may be
+           ;; optimized out of compiled Guix modules).
+           (os->image spec #:type (if type
+                                     (lookup-image-type-by-name (string->symbol type))
+                                     mbr-hybrid-raw-image-type)))
+          (else (error "expected an operating-system or image record")))))
+
+(define (load-machines file)
+  (let ((value (load* file '((gnu machine) (gnu machine ssh)))))
+    (cond ((machine? value) (list value))
+          ((and (list? value) (every machine? value)) value)
+          (else (error "expected a machine or list of machines")))))
 
 (define-command (guix-secrets . args)
   (synopsis "provision private files in built images or running hosts")
@@ -34,30 +64,37 @@ Images use FUSE when available, otherwise request Polkit authentication.
       (let* ((opts (getopt-long (cons "secrets" args)
                                '((help (single-char #\h))
                                  (load-path (single-char #\L) (value #t))
-                                 (manifest (value #t)) (output (value #t))
-                                 (root-label (value #t)) (host (value #t))
-                                 (user (value #t)) (port (value #t))
-                                 (identity (value #t)) (host-key (value #t)))))
+                                 (secrets (value #t)) (secrets-directory (value #t)) (artifact (value #t))
+                                 (output (value #t)) (image-type (value #t))
+                                 (system (value #t)) (target (value #t)))))
              (operands (option-ref opts '() '())))
-        (when (option-ref opts 'load-path #f)
-          (set! %load-path (cons (option-ref opts 'load-path #f) %load-path)))
+        (for-each (lambda (entry)
+                    (when (eq? (car entry) 'load-path)
+                      (set! %load-path (cons (cdr entry) %load-path))))
+                  (reverse opts))
         (if (or (option-ref opts 'help #f) (null? args))
             (show-help)
-            (let ((files (load-manifest (required opts 'manifest))))
-              (match operands
-                (("image" input)
-                 (provision-image input (required opts 'output) files
-                                  (option-ref opts 'root-label #f)))
-                (("deploy")
-                 (let ((port (string->number (option-ref opts 'port "22"))))
-                   (unless (and (integer? port) (<= 1 port 65535))
-                     (error "invalid SSH port"))
-                   (deploy-files files (required opts 'host)
-                                 (option-ref opts 'user "root") port
-                                 (required opts 'identity) (required opts 'host-key))))
-                (_ (error "expected image or deploy action")))))))
+            (let ((evaluate
+                   (lambda (thunk)
+                     (parameterize ((%current-system (option-ref opts 'system (%current-system)))
+                                    (%current-target-system (option-ref opts 'target (%current-target-system))))
+                       (thunk)))))
+              (let ((files (evaluate
+                            (lambda () (load-secrets (required opts 'secrets)
+                                                    (option-ref opts 'secrets-directory #f))))))
+                (match operands
+                  (("image" spec)
+                   ;; Realize tools and the privileged helper for the runner,
+                   ;; not the target architecture used to evaluate declarations.
+                   (provision-image (required opts 'artifact) (required opts 'output)
+                                    files (evaluate (lambda () (resolve-image spec (option-ref opts 'image-type #f))))
+                                    #:evaluate evaluate))
+                  (("deploy" specs ...)
+                   (when (null? specs) (error "missing machine declaration"))
+                   (deploy-files files (evaluate (lambda () (append-map load-machines specs)))))
+                  (_ (error "expected image or deploy action"))))))))
     (lambda (key . args)
-      ;; No exception printer: reader/I/O exceptions can contain payload data.
+      ;; Exceptions from evaluating private Scheme may contain secret values.
       (if (and (eq? key 'secrets-error) (pair? args) (string? (car args)))
           (format (current-error-port) "guix secrets: ~a~%" (car args))
           (format (current-error-port) "guix secrets: provisioning failed (~a)~%" key))

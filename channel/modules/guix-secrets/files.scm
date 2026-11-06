@@ -1,5 +1,5 @@
 ;;; SPDX-License-Identifier: MPL-2.0
-;;; This module deliberately depends only on Guile: it also runs on the target.
+;;; Local file installation for mounted images.
 (define-module (guix-secrets files)
   #:use-module (ice-9 match)
   #:use-module (ice-9 ftw)
@@ -34,12 +34,8 @@
           (unless (and (valid-destination? destination)
                        (integer? mode) (exact? mode) (<= 0 mode #o777))
             (error "invalid secret destination or mode"))
-          (when (any (lambda (other)
-                       (or (string=? other destination)
-                           (string-prefix? (string-append other "/") destination)
-                           (string-prefix? (string-append destination "/") other)))
-                     names)
-            (error "overlapping secret destinations"))
+          (when (member destination names)
+            (error "duplicate secret destination"))
           (set! names (cons destination names)))
          (_ (error "invalid secret file entry"))))
      files))

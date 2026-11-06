@@ -70,7 +70,6 @@ resource "guix_image" "from_image_specification" {
 - `artifact_path` (String) Flashable image under artifact_directory/<name>/<id>/image. A private mode-0600 copy when secrets are attached; otherwise a symlink to the clean image.
 - `id` (String) Unique resource identity, owning an independent image GC root.
 - `input_digest` (String) Digest of the configuration, channels, system, cross target and source files.
-- `provisioning_revision` (String, Sensitive) Private digest of installed file contents, modes and the bundled provisioner implementation.
 - `sha256` (String) SHA256 checksum of the image bytes.
 - `store_path` (String) Clean immutable Guix store image path, retained by the adjacent base-image GC root. Contains no provisioned secrets.
 
@@ -87,7 +86,7 @@ Optional:
 - `image` (String) Scheme source evaluating to a Guix image record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
 - `machine` (String) Scheme source evaluating to a Guix machine record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
 - `os` (String) Scheme source evaluating to a Guix operating-system record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
-- `secrets` (Attributes) Private files, normally guix_secrets.<name>. Images install these after building; hosts install them before any required Guix deployment. (see [below for nested schema](#nestedatt--blueprint--secrets))
+- `secrets` (Attributes) Private provisioning declaration, normally guix_secrets.<name>. Images install it after building; hosts install it before any required deployment. Requires the installed guix secrets extension in the pinned channels. (see [below for nested schema](#nestedatt--blueprint--secrets))
 - `source_files` (Map of String) Public supporting files keyed by normalized relative path, including Scheme modules, local assets and encrypted documents. Provider filenames are reserved.
 
 <a id="nestedatt--blueprint--secrets"></a>
@@ -95,16 +94,9 @@ Optional:
 
 Required:
 
-- `files` (Attributes Map) Files keyed by absolute destination path. Consuming images and hosts install these files outside /gnu/store with root ownership. Contents are sensitive and remain outside the Guix source bundle. (see [below for nested schema](#nestedatt--blueprint--secrets--files))
-- `id` (String) Secret descriptor resource identity.
-
-<a id="nestedatt--blueprint--secrets--files"></a>
-### Nested Schema for `blueprint.secrets.files`
-
-Required:
-
-- `content` (String, Sensitive) File contents, retained as sensitive Terraform state.
+- `secrets` (String, Sensitive) Scheme source evaluating to a (guix secrets) secrets-configuration record. Accepts raw source, file(), templatefile(), or an explicit load expression. Evaluated only by a consuming leaf during apply. Relative sources and load expressions use the Terraform working directory; use absolute paths when referencing module-local files.
 
 Optional:
 
-- `mode` (String) Installed Unix file mode; defaults to 0600.
+- `file_digests` (Map of String, Sensitive) Explicit file change triggers, normally { name = filesha256(path) }. Terraform recalculates these during planning. Use for source files read by Scheme; the provider does not discover or evaluate private sources during planning. Keys are descriptive names, values are digests. Excluded from public Guix build inputs.
+- `id` (String) Secret descriptor resource identity.

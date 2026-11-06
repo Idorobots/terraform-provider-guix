@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"testing"
 
 	"github.com/SpartanWorks/terraform-provider-guix/internal/guix"
@@ -17,6 +16,10 @@ import (
 
 func TestAccSecretsAttachment(t *testing.T) {
 	client, backend := fakeClient(t)
+	sourceFile := filepath.Join(t.TempDir(), "identity")
+	if err := os.WriteFile(sourceFile, []byte("source-v1"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	config := func(content, attachment string) string {
 		return fmt.Sprintf(`
 provider "guix" {
@@ -24,9 +27,8 @@ provider "guix" {
   ssh = { host_key = "host key", private_key = "management key" }
 }
 resource "guix_secrets" "server" {
-  files = {
-    "/etc/example/key" = { content = %q }
-  }
+  secrets = %q
+  file_digests = { external = filesha256(%q) }
 }
 resource "guix_blueprint" "server" {
   os = "system"
@@ -39,7 +41,7 @@ resource "guix_host" "server" {
   hostname = "server.local"
   blueprint = guix_blueprint.server
 }
-`, client.ArtifactDirectory, content, attachment)
+`, client.ArtifactDirectory, content, sourceFile, attachment)
 	}
 	var identity string
 	check := func(content string, builds, provisions int) testresource.TestCheckFunc {
@@ -49,7 +51,11 @@ resource "guix_host" "server" {
 			if identity == "" {
 				identity = secrets["id"]
 			}
-			if identity == "" || secrets["id"] != identity || image["blueprint.secrets.id"] != identity || image["blueprint.secrets.files./etc/example/key.content"] != content || image["blueprint.secrets.files./etc/example/key.mode"] != "0600" {
+			digest, err := guix.Checksum(t.Context(), sourceFile)
+			if err != nil {
+				return err
+			}
+			if identity == "" || secrets["id"] != identity || image["blueprint.secrets.id"] != identity || image["blueprint.secrets.secrets"] != content || image["blueprint.secrets.file_digests.external"] != digest {
 				return fmt.Errorf("secret attachment or stable identity was not preserved")
 			}
 			// Private descriptors must not influence the public Guix build source.
@@ -62,7 +68,7 @@ resource "guix_host" "server" {
 			if backend.builds != builds || backend.systemBuilds != 1 || backend.deployments != 1 || backend.imageProvisions != provisions || backend.hostProvisions != provisions {
 				return fmt.Errorf("builds=%d deployments=%d image provisions=%d host provisions=%d", backend.builds, backend.deployments, backend.imageProvisions, backend.hostProvisions)
 			}
-			if backend.installedFiles["/etc/example/key"].Content != content {
+			if backend.installedSecrets.Expression != content {
 				return fmt.Errorf("host secret was not updated")
 			}
 			info, err := os.Lstat(image["artifact_path"])
@@ -82,6 +88,13 @@ resource "guix_host" "server" {
 		{Config: config("private-v2", "secrets = guix_secrets.server"), ConfigPlanChecks: testresource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
 			plancheck.ExpectResourceAction("guix_image.server", plancheck.ResourceActionDestroyBeforeCreate),
 		}}, Check: check("private-v2", 3, 2)},
+		{Config: config("private-v2", "secrets = guix_secrets.server"), PreConfig: func() {
+			if err := os.WriteFile(sourceFile, []byte("source-v2"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}, ConfigPlanChecks: testresource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+			plancheck.ExpectResourceAction("guix_image.server", plancheck.ResourceActionDestroyBeforeCreate),
+		}}, Check: check("private-v2", 4, 3)},
 		{Config: config("private-v2", "secrets = guix_secrets.server"), PlanOnly: true, ExpectNonEmptyPlan: false},
 		{Config: config("private-v2", ""), Check: func(state *terraform.State) error {
 			if state.RootModule().Resources["guix_image.server"].Primary.Attributes["blueprint.secrets.id"] != "" {
@@ -90,20 +103,4 @@ resource "guix_host" "server" {
 			return nil
 		}},
 	}})
-}
-
-func TestAccInvalidSecretDestinationsAndModes(t *testing.T) {
-	client, _ := fakeClient(t)
-	for _, destination := range []string{"relative/key", "/etc/../key", "/", "/gnu/store/key"} {
-		t.Run(destination, func(t *testing.T) {
-			testresource.Test(t, testresource.TestCase{ProtoV6ProviderFactories: factories(client), Steps: []testresource.TestStep{{
-				Config:      fmt.Sprintf(`resource "guix_secrets" "invalid" { files = { %q = { content = "private" } } }`, destination),
-				ExpectError: regexp.MustCompile("Invalid secret destination"),
-			}}})
-		})
-	}
-	testresource.Test(t, testresource.TestCase{ProtoV6ProviderFactories: factories(client), Steps: []testresource.TestStep{{
-		Config:      `resource "guix_secrets" "invalid" { files = { "/etc/key" = { content = "private", mode = "0888" } } }`,
-		ExpectError: regexp.MustCompile("octal file mode"),
-	}}})
 }

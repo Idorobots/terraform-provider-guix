@@ -74,7 +74,8 @@ type fakeBackend struct {
 	deploymentError                             error
 	imageProvisions, hostProvisions             int
 	provisionError                              error
-	installedFiles                              guix.SecretFiles
+	installedSecrets                            guix.SecretConfiguration
+	extensionError                              error
 	systemBuilds                                int
 }
 
@@ -134,7 +135,11 @@ func (f *fakeBackend) BuildImage(ctx context.Context, s guix.Source, imageType, 
 	return image, checksum, err
 }
 
-func (f *fakeBackend) ProvisionImage(ctx context.Context, _ string, files guix.SecretFiles, input, output string) (string, error) {
+func (f *fakeBackend) CheckSecrets(context.Context, guix.Source) error {
+	return f.extensionError
+}
+
+func (f *fakeBackend) ProvisionImage(ctx context.Context, _ guix.Source, secrets guix.SecretConfiguration, _, _ string, input, output string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.imageProvisions++
@@ -145,27 +150,24 @@ func (f *fakeBackend) ProvisionImage(ctx context.Context, _ string, files guix.S
 	if err != nil {
 		return "", err
 	}
-	body = append(body, []byte(files.Revision())...)
+	body = append(body, []byte(secrets.Expression)...)
 	if err := os.WriteFile(output, body, 0600); err != nil {
 		return "", err
 	}
 	return guix.Checksum(ctx, output)
 }
 
-func (f *fakeBackend) ProvisionHost(_ context.Context, _ string, files guix.SecretFiles, _ guix.Destination) error {
+func (f *fakeBackend) ProvisionHost(_ context.Context, _ guix.Source, secrets guix.SecretConfiguration, _ guix.Destination) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(files) != 0 {
+	if secrets.Expression != "" {
 		f.hostProvisions++
 	}
 	if f.provisionError != nil {
 		return f.provisionError
 	}
-	if f.installedFiles == nil {
-		f.installedFiles = guix.SecretFiles{}
-	}
-	for name, file := range files {
-		f.installedFiles[name] = file
+	if secrets.Expression != "" {
+		f.installedSecrets = secrets
 	}
 	return nil
 }

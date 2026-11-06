@@ -50,8 +50,9 @@ type Backend interface {
 	BuildImage(context.Context, Source, string, string, string) (string, string, error)
 	BuildSystem(context.Context, Source) (string, error)
 	Deploy(context.Context, Source, Destination) error
-	ProvisionImage(context.Context, string, SecretFiles, string, string) (string, error)
-	ProvisionHost(context.Context, string, SecretFiles, Destination) error
+	CheckSecrets(context.Context, Source) error
+	ProvisionImage(context.Context, Source, SecretConfiguration, string, string, string, string) (string, error)
+	ProvisionHost(context.Context, Source, SecretConfiguration, Destination) error
 }
 
 type Destination struct {

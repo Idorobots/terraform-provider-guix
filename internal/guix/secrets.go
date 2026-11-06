@@ -3,86 +3,51 @@ package guix
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
-
-	providerchannel "github.com/SpartanWorks/terraform-provider-guix/channel"
 )
 
-type SecretFile struct {
-	Content string
-	Mode    string
-}
-type SecretFiles map[string]SecretFile
-
-// Revision is private provisioning state, never a public Guix source digest.
-func (files SecretFiles) Revision() string {
-	if len(files) == 0 {
-		return ""
-	}
-	body, _ := json.Marshal(struct {
-		Files          SecretFiles
-		Implementation string
-	}{files, providerchannel.Digest()})
-	digest := sha256.Sum256(body)
-	return hex.EncodeToString(digest[:])
+// SecretConfiguration is private provisioning input, never a Guix build input.
+// FileDigests are explicit Terraform change triggers; Scheme is evaluated only
+// by the installed extension during apply.
+type SecretConfiguration struct {
+	Expression  string
+	FileDigests map[string]string
 }
 
-func (c Client) provision(ctx context.Context, channels string, files SecretFiles, destination *Destination, args ...string) error {
-	public, err := os.MkdirTemp("", "terraform-guix-extension-")
+func (c Client) CheckSecrets(ctx context.Context, source Source) error {
+	dir, err := workspace(source)
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(public)
+	defer os.RemoveAll(dir)
+	if _, err := c.invoke(ctx, dir, "secrets", "--help"); err != nil {
+		return fmt.Errorf("guix secrets extension is unavailable: include the terraform-provider-guix channel in blueprint.channels and install it with guix pull; the extension must be available inside the pinned guix time-machine environment: %w", err)
+	}
+	return nil
+}
+
+func (c Client) provision(ctx context.Context, source Source, secrets SecretConfiguration, destination *Destination, args ...string) error {
+	dir, err := workspace(source)
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
 	private, err := os.MkdirTemp("", "terraform-guix-private-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(private)
-	extension := filepath.Join(public, "channel")
-	if err := providerchannel.Extract(extension); err != nil {
+	declaration := filepath.Join(private, "secrets.scm")
+	if err := os.WriteFile(declaration, []byte(secrets.Expression), 0600); err != nil {
 		return err
 	}
-	channelFile := filepath.Join(public, "channels.scm")
-	if err := os.WriteFile(channelFile, []byte(channels), 0600); err != nil {
-		return err
-	}
-	type entry struct {
-		Source      string `json:"source"`
-		Destination string `json:"destination"`
-		Mode        string `json:"mode"`
-	}
-	manifest := struct {
-		Version int     `json:"version"`
-		Files   []entry `json:"files"`
-	}{Version: 1, Files: []entry{}}
-	names := make([]string, 0, len(files))
-	for name := range files {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for i, name := range names {
-		file := files[name]
-		payload := filepath.Join(private, fmt.Sprintf("payload-%d", i))
-		if err := os.WriteFile(payload, []byte(file.Content), 0600); err != nil {
-			return err
-		}
-		manifest.Files = append(manifest.Files, entry{payload, name, file.Mode})
-	}
-	body, err := json.Marshal(manifest)
+	cwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	manifestPath := filepath.Join(private, "manifest.json")
-	if err := os.WriteFile(manifestPath, body, 0600); err != nil {
-		return err
-	}
+	args = append(args, "--secrets="+declaration, "--secrets-directory="+cwd)
 	if destination != nil {
 		identity := destination.IdentityFile
 		if destination.PrivateKey != "" {
@@ -98,27 +63,41 @@ func (c Client) provision(ctx context.Context, channels string, files SecretFile
 		if err != nil {
 			return err
 		}
-		args = append(args, "--host="+destination.Address, "--user="+destination.User,
-			"--port="+strconv.Itoa(destination.Port), "--identity="+identity, "--host-key="+destination.HostKey)
+		definition, err := deploymentDefinition(source, dir, *destination, identity)
+		if err != nil {
+			return err
+		}
+		machines := filepath.Join(private, "machines.scm")
+		if err := os.WriteFile(machines, []byte(definition), 0600); err != nil {
+			return err
+		}
+		args = append(args, machines)
+	} else {
+		args = append(args, filepath.Join(dir, "configuration.scm"))
 	}
-	// env is per invocation: never mutate the provider's process environment.
-	command := []string{"GUIX_EXTENSIONS_PATH=" + extension, "GUILE_AUTO_COMPILE=0", "guix", "time-machine", "-C", channelFile, "--", "secrets"}
-	command = append(command, args...)
-	command = append(command, "--manifest="+manifestPath)
-	_, err = run(ctx, c.Runner, public, "env", command...)
+	_, err = c.invoke(ctx, dir, "secrets", args...)
 	return err
 }
 
-func (c Client) ProvisionImage(ctx context.Context, channels string, files SecretFiles, input, output string) (string, error) {
-	if err := c.provision(ctx, channels, files, nil, "image", "--output="+output, input); err != nil {
+func (c Client) ProvisionImage(ctx context.Context, source Source, secrets SecretConfiguration, imageType, target, input, output string) (string, error) {
+	args := []string{"image", "--artifact=" + input, "--output=" + output}
+	if target != "" {
+		args = append(args, "--target="+target)
+	} else {
+		args = append(args, "--system="+source.System)
+	}
+	if imageType != "" {
+		args = append(args, "--image-type="+imageType)
+	}
+	if err := c.provision(ctx, source, secrets, nil, args...); err != nil {
 		return "", err
 	}
 	return Checksum(ctx, output)
 }
 
-func (c Client) ProvisionHost(ctx context.Context, channels string, files SecretFiles, destination Destination) error {
-	if len(files) == 0 {
+func (c Client) ProvisionHost(ctx context.Context, source Source, secrets SecretConfiguration, destination Destination) error {
+	if secrets.Expression == "" {
 		return nil
 	}
-	return c.provision(ctx, channels, files, &destination, "deploy")
+	return c.provision(ctx, source, secrets, &destination, "deploy", "--system="+source.System)
 }

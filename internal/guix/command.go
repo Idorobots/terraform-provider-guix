@@ -39,7 +39,7 @@ func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) (st
 	// Guix starts builders and inferior Guile processes. Cancel the whole group.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
-		if name == "env" && slices.Contains(args, "secrets") {
+		if slices.Contains(args, "secrets") {
 			// Let the extension unwind mounts before escalating cancellation.
 			err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 			go func() {

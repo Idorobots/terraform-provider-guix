@@ -26,11 +26,13 @@ resource "tls_private_key" "host" {
 
 resource "guix_secrets" "host" {
   for_each = tls_private_key.host
-  files = {
-    "/etc/ssh/ssh_host_ed25519_key" = {
-      content = each.value.private_key_openssh
-    }
-  }
+  secrets  = <<-SCM
+    (use-modules (guix secrets) (guix base64))
+    (secrets-configuration
+      (files (list (secret-file
+                     (destination "/etc/ssh/ssh_host_ed25519_key")
+                     (content (base64-decode "${base64encode(each.value.private_key_openssh)}"))))))
+  SCM
 }
 
 locals {

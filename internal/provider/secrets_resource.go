@@ -1,74 +1,38 @@
 // SPDX-License-Identifier: MPL-2.0
-
 package provider
 
 import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"path"
-	"strings"
 
 	"github.com/SpartanWorks/terraform-provider-guix/internal/guix"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 )
 
 type SecretsResource struct{}
-
 type SecretsModel struct {
-	ID    types.String `tfsdk:"id"`
-	Files types.Map    `tfsdk:"files"`
+	ID          types.String `tfsdk:"id"`
+	Secrets     types.String `tfsdk:"secrets"`
+	FileDigests types.Map    `tfsdk:"file_digests"`
 }
 
-type secretPaths struct{}
-
-func (secretPaths) Description(context.Context) string {
-	return "normalized absolute file paths outside /gnu/store"
-}
-func (v secretPaths) MarkdownDescription(ctx context.Context) string { return v.Description(ctx) }
-func (secretPaths) ValidateMap(_ context.Context, req validator.MapRequest, resp *validator.MapResponse) {
-	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
-		return
-	}
-	for name := range req.ConfigValue.Elements() {
-		if !path.IsAbs(name) || path.Clean(name) != name || strings.ContainsRune(name, 0) || name == "/" || name == "/gnu/store" || strings.HasPrefix(name, "/gnu/store/") {
-			resp.Diagnostics.AddAttributeError(req.Path, "Invalid secret destination", "File destinations must be normalized absolute paths outside /gnu/store.")
-		}
-		for other := range req.ConfigValue.Elements() {
-			if strings.HasPrefix(other, name+"/") {
-				resp.Diagnostics.AddAttributeError(req.Path, "Overlapping secret destinations", "A secret file destination cannot be a parent directory of another secret file.")
-			}
-		}
-	}
-}
-
-func secretFilesSchema() schema.MapNestedAttribute {
-	return schema.MapNestedAttribute{
-		Required:            true,
-		MarkdownDescription: "Files keyed by absolute destination path. Consuming images and hosts install these files outside /gnu/store with root ownership. Contents are sensitive and remain outside the Guix source bundle.",
-		Validators:          []validator.Map{secretPaths{}},
-		NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
-			"content": schema.StringAttribute{Required: true, Sensitive: true, MarkdownDescription: "File contents, retained as sensitive Terraform state."},
-			"mode":    schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("0600"), MarkdownDescription: "Installed Unix file mode; defaults to 0600.", Validators: []validator.String{stringCheck("octal file mode")}},
-		}},
+func secretsAttributes() map[string]schema.Attribute {
+	return map[string]schema.Attribute{
+		"secrets":      schema.StringAttribute{Required: true, Sensitive: true, MarkdownDescription: "Scheme source evaluating to a (guix secrets) secrets-configuration record. Accepts raw source, file(), templatefile(), or an explicit load expression. Evaluated only by a consuming leaf during apply. Relative sources and load expressions use the Terraform working directory; use absolute paths when referencing module-local files.", Validators: []validator.String{stringCheck("nonempty string")}},
+		"file_digests": schema.MapAttribute{Optional: true, Sensitive: true, ElementType: types.StringType, MarkdownDescription: "Explicit file change triggers, normally { name = filesha256(path) }. Terraform recalculates these during planning. Use for source files read by Scheme; the provider does not discover or evaluate private sources during planning. Keys are descriptive names, values are digests. Excluded from public Guix build inputs."},
 	}
 }
 
 func blueprintSecretsSchema() schema.SingleNestedAttribute {
-	return schema.SingleNestedAttribute{
-		Optional:            true,
-		MarkdownDescription: "Private files, normally guix_secrets.<name>. Images install these after building; hosts install them before any required Guix deployment.",
-		Attributes: map[string]schema.Attribute{
-			"id":    schema.StringAttribute{Required: true, MarkdownDescription: "Secret descriptor resource identity."},
-			"files": secretFilesSchema(),
-		},
-	}
+	attrs := secretsAttributes()
+	attrs["id"] = schema.StringAttribute{Optional: true, MarkdownDescription: "Secret descriptor resource identity."}
+	return schema.SingleNestedAttribute{Optional: true, MarkdownDescription: "Private provisioning declaration, normally guix_secrets.<name>. Images install it after building; hosts install it before any required deployment. Requires the installed guix secrets extension in the pinned channels.", Attributes: attrs}
 }
 
 func NewSecretsResource() resource.Resource { return &SecretsResource{} }
@@ -76,13 +40,9 @@ func (*SecretsResource) Metadata(_ context.Context, req resource.MetadataRequest
 	resp.TypeName = req.ProviderTypeName + "_secrets"
 }
 func (*SecretsResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
-	resp.Schema = schema.Schema{
-		MarkdownDescription: "A logical collection of private files. Attach it to guix_blueprint.secrets for installation by image and host consumers through the bundled guix secrets extension. This descriptor itself performs no I/O and has no SOPS or age dependency. Terraform state contains the file contents. Removing files or destroying this descriptor does not delete files from running hosts.",
-		Attributes: map[string]schema.Attribute{
-			"id":    computedString("Stable identity of the secret file collection.", true),
-			"files": secretFilesSchema(),
-		},
-	}
+	attrs := secretsAttributes()
+	attrs["id"] = computedString("Stable identity of the secret declaration.", true)
+	resp.Schema = schema.Schema{MarkdownDescription: "A private Scheme secrets declaration. Attach it to guix_blueprint.secrets for image or SSH provisioning through the installed guix secrets extension. This descriptor performs no Scheme evaluation or remote I/O. Inline contents remain in sensitive Terraform state. Removing this descriptor does not delete installed files.", Attributes: attrs}
 }
 func (*SecretsResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var model SecretsModel
@@ -108,53 +68,55 @@ func (*SecretsResource) Update(ctx context.Context, req resource.UpdateRequest, 
 func (*SecretsResource) Read(context.Context, resource.ReadRequest, *resource.ReadResponse)       {}
 func (*SecretsResource) Delete(context.Context, resource.DeleteRequest, *resource.DeleteResponse) {}
 
-func blueprintSecretFiles(ctx context.Context, value types.Object) (guix.SecretFiles, bool, diag.Diagnostics) {
-	var diagnostics diag.Diagnostics
-	files := guix.SecretFiles{}
-	if value.IsUnknown() {
-		return files, false, diagnostics
+func hasSecrets(value types.Object) bool {
+	return !value.IsNull() && !value.IsUnknown() && !value.Attributes()["secrets"].IsNull()
+}
+
+func secretsEqual(a, b types.Object) bool {
+	if a.IsNull() || b.IsNull() || a.IsUnknown() || b.IsUnknown() {
+		return a.Equal(b)
 	}
-	if value.IsNull() {
-		return files, true, diagnostics
+	left, right := a.Attributes()["secrets"], b.Attributes()["secrets"]
+	if left.IsNull() || right.IsNull() || left.IsUnknown() || right.IsUnknown() {
+		return left.Equal(right)
+	}
+	// Descriptor identity is metadata, just as blueprint.id is not a build input.
+	first, firstOK := left.(types.Object)
+	second, secondOK := right.(types.Object)
+	if !firstOK || !secondOK {
+		return false
+	}
+	firstAttrs, secondAttrs := first.Attributes(), second.Attributes()
+	return firstAttrs["secrets"].Equal(secondAttrs["secrets"]) && firstAttrs["file_digests"].Equal(secondAttrs["file_digests"])
+}
+
+func blueprintSecrets(ctx context.Context, value types.Object) (guix.SecretConfiguration, bool, diag.Diagnostics) {
+	var result guix.SecretConfiguration
+	var diagnostics diag.Diagnostics
+	if value.IsUnknown() {
+		return result, false, diagnostics
+	}
+	if !hasSecrets(value) {
+		return result, true, diagnostics
 	}
 	var blueprint BlueprintModel
 	diagnostics.Append(value.As(ctx, &blueprint, basetypes.ObjectAsOptions{})...)
-	if diagnostics.HasError() {
-		return files, false, diagnostics
+	if diagnostics.HasError() || blueprint.Secrets.IsUnknown() {
+		return result, false, diagnostics
 	}
-	if blueprint.Secrets.IsUnknown() {
-		return files, false, diagnostics
+	var model SecretsModel
+	diagnostics.Append(blueprint.Secrets.As(ctx, &model, basetypes.ObjectAsOptions{})...)
+	if diagnostics.HasError() || model.Secrets.IsUnknown() || model.FileDigests.IsUnknown() {
+		return result, false, diagnostics
 	}
-	if blueprint.Secrets.IsNull() {
-		return files, true, diagnostics
+	result.Expression = model.Secrets.ValueString()
+	if !model.FileDigests.IsNull() {
+		for _, v := range model.FileDigests.Elements() {
+			if v.IsUnknown() {
+				return result, false, diagnostics
+			}
+		}
+		diagnostics.Append(model.FileDigests.ElementsAs(ctx, &result.FileDigests, false)...)
 	}
-	var secrets SecretsModel
-	diagnostics.Append(blueprint.Secrets.As(ctx, &secrets, basetypes.ObjectAsOptions{})...)
-	if diagnostics.HasError() || secrets.Files.IsUnknown() {
-		return files, false, diagnostics
-	}
-	for name, value := range secrets.Files.Elements() {
-		if value.IsUnknown() {
-			return files, false, diagnostics
-		}
-		var file struct {
-			Content types.String `tfsdk:"content"`
-			Mode    types.String `tfsdk:"mode"`
-		}
-		object, ok := value.(types.Object)
-		if !ok || object.IsNull() {
-			diagnostics.AddError("Invalid secret file", "Every secret file must contain content and a file mode.")
-			return files, false, diagnostics
-		}
-		diagnostics.Append(object.As(ctx, &file, basetypes.ObjectAsOptions{})...)
-		if file.Content.IsUnknown() || file.Mode.IsUnknown() {
-			return files, false, diagnostics
-		}
-		mode := file.Mode.ValueString()
-		if mode == "" {
-			mode = "0600"
-		}
-		files[name] = guix.SecretFile{Content: file.Content.ValueString(), Mode: mode}
-	}
-	return files, !diagnostics.HasError(), diagnostics
+	return result, !diagnostics.HasError(), diagnostics
 }
