@@ -24,18 +24,16 @@ resource "tls_private_key" "host" {
   algorithm = "ED25519"
 }
 
-resource "guix_secrets" "host" {
-  for_each = tls_private_key.host
-  secrets  = <<-SCM
-    (use-modules (guix secrets) (guix base64))
-    (secrets-configuration
-      (files (list (secret-file
-                     (destination "/etc/ssh/ssh_host_ed25519_key")
-                     (content (base64-decode "${base64encode(each.value.private_key_openssh)}"))))))
-  SCM
-}
-
 locals {
+  host_secrets = {
+    for name, key in tls_private_key.host : name => <<-SCM
+      (use-modules (guix secrets) (guix base64))
+      (secrets
+        (files (list (secret-file
+                       (destination "/etc/ssh/ssh_host_ed25519_key")
+                       (content (base64-decode "${base64encode(key.private_key_openssh)}"))))))
+    SCM
+  }
   channels = file("${path.module}/channels-lock.scm")
   sources = {
     "management.pub" = tls_private_key.management.public_key_openssh
@@ -54,7 +52,7 @@ resource "guix_blueprint" "controller" {
   os           = local.controller_configuration
   channels     = local.channels
   source_files = local.sources
-  secrets      = guix_secrets.host["controller"]
+  secrets      = local.host_secrets["controller"]
 }
 
 resource "guix_image" "controller" {
@@ -76,7 +74,7 @@ resource "guix_blueprint" "worker" {
   os           = local.worker_configuration
   channels     = local.channels
   source_files = local.sources
-  secrets      = guix_secrets.host["worker"]
+  secrets      = local.host_secrets["worker"]
 }
 
 resource "guix_image" "worker" {

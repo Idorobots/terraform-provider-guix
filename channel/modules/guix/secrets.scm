@@ -7,7 +7,7 @@
   #:use-module (srfi srfi-1)
   #:export (secret-file secret-file? secret-file-source secret-file-content
             secret-file-destination secret-file-mode
-            secrets-configuration secrets-configuration? secrets-configuration-files
+            secrets secrets? secrets-files
             load-secrets))
 
 (define-record-type* <secret-file> secret-file make-secret-file secret-file?
@@ -16,9 +16,9 @@
   (destination secret-file-destination)
   (mode secret-file-mode (default #o600)))
 
-(define-record-type* <secrets-configuration>
-  secrets-configuration make-secrets-configuration secrets-configuration?
-  (files secrets-configuration-files (default '())))
+(define-record-type* <secrets>
+  secrets make-secrets secrets?
+  (files secrets-files (default '())))
 
 (define* (load-secrets file #:optional directory)
   "Evaluate FILE locally. Relative payload sources are relative to FILE."
@@ -37,8 +37,8 @@
                             (module-use! (current-module) (resolve-interface '(guix secrets)))
                             (primitive-load file))))
                        (lambda () (set! %load-should-auto-compile compile?)))))))
-    (unless (secrets-configuration? config)
-      (error "secrets declaration must return a secrets-configuration"))
+    (unless (secrets? config)
+      (error "secrets declaration must return a secrets record"))
     (validate-payload
      (map (lambda (entry)
             (unless (secret-file? entry) (error "expected a secret-file record"))
@@ -57,4 +57,4 @@
                         (cond ((string? content) (string->utf8 content))
                               ((bytevector? content) content)
                               (else (error "secret content must be a string or bytevector")))))))
-          (secrets-configuration-files config)))))
+          (secrets-files config)))))

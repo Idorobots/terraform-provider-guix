@@ -6,10 +6,9 @@ This project is vibe-coded. I strongly advise against using it for anything seri
 
 | Resource | Purpose |
 | --- | --- |
-| [`guix_blueprint`](docs/resources/blueprint.md) | OS, image and machine specifications, pinned channels, sources and secret descriptors |
+| [`guix_blueprint`](docs/resources/blueprint.md) | OS, image and machine specifications, pinned channels, sources and private secrets |
 | [`guix_image`](docs/resources/image.md) | Build and provision a bootable image |
 | [`guix_host`](docs/resources/host.md) | Discover a running installation, expose its IPv4 address, and reconcile its configuration |
-| [`guix_secrets`](docs/resources/secrets.md) | Declare private files installed by image and host consumers |
 
 ## Requirements
 
@@ -70,7 +69,7 @@ architectures.
   evaluate Scheme or perform builds or deployments. All three specifications may
   be absent; each consumer validates its own requirements.
 - **Images are immutable resources.** Selected source, channels, supporting files,
-  image type, architecture, secrets declarations or file digests replace the image resource.
+  image type, architecture or secrets declaration changes replace the image resource.
   The clean base remains in the Guix store; provisioned copies live outside it
   with mode 0600. Secret-only changes reuse the cached base derivation.
 - Each image owns a `base-image` GC-root symlink. Its adjacent `image` is the
@@ -109,7 +108,7 @@ Authorization changes take effect when the consuming Guix configurations are
 deployed.
 
 `ssh.host_key` is the server's own OpenSSH public key. Obtain it through a trusted
-commissioning channel, or provision its private half through `guix_secrets`.
+commissioning channel, or provision its private half through `guix_blueprint.secrets`.
 It is verified by both inspection and Guix deployment. Management keys do not
 substitute for server identity. Private host keys are installed outside the Guix
 store. `tls_private_key` and `ssh.private_key` values are stored in OpenTofu
@@ -118,21 +117,38 @@ are mode 0600 and removed after the operation.
 
 ### Private file provisioning
 
-`guix_secrets.secrets` accepts sensitive Scheme source evaluating to a
-`secrets-configuration` from `(guix secrets)`. Entries are `secret-file` records
+`guix_blueprint.secrets` accepts sensitive Scheme source evaluating to a
+`secrets` record from `(guix secrets)`. Entries are `secret-file` records
 with a destination, source file or inline string/bytevector content, and a mode
-(default `#o600`). Attach the whole resource with `secrets = guix_secrets.<name>`
-on a blueprint. For externally referenced files, supply explicit change triggers:
+(default `#o600`). Pass the Scheme expression directly, or reuse one through
+Terraform locals, variables or templates:
 
 ```hcl
-file_digests = { identity = filesha256("/absolute/path/to/identity") }
+resource "guix_blueprint" "server" {
+  os       = file("${path.module}/os.scm")
+  channels = file("${path.module}/channels-lock.scm")
+  secrets  = file("${path.module}/secrets.scm")
+}
 ```
 
-Terraform recalculates these digests during planning. Neither the Scheme input
-nor the digests enter `source_files` or public Guix build inputs. Scheme is
-evaluated only during apply. Relative sources and load expressions use the
+For example, `secrets.scm` may contain:
+
+```scheme
+(use-modules (guix secrets))
+
+(secrets
+  (files (list (secret-file
+                 (source "private/identity")
+                 (destination "/etc/example/identity")))))
+```
+
+Private Scheme is excluded from `source_files` and public Guix build inputs and
+is evaluated only during apply. Relative sources and load expressions use the
 Terraform working directory; use `abspath()` in module-local templates. Inline
-secrets remain in sensitive Terraform state. The resource has no SOPS/age dependency.
+secrets remain in sensitive Terraform state. Provisioning has no SOPS/age dependency.
+Terraform-generated keys interpolated into Scheme are already tracked: changing
+the key changes the expression, replaces image consumers and reprovisions host
+consumers in place.
 
 Install the [Guix secrets channel](channel/README.md) and include it in the
 blueprint's pinned channels. Apply fails with an installation hint if the
@@ -147,13 +163,75 @@ Files are root-owned with declared modes; new private parent directories use
 0700. Image writes reject symlink parents/leaves. Running-host provisioning uses
 the effective machine's SSH connection, ordinary shell/coreutils operations and
 an already privileged user; permission failures are errors. It needs neither
-remote Guile nor a sudo fallback. Replacements are atomic per file. Removing an attachment
-or destroying a descriptor/host does not delete remote files. Files installed
+remote Guile nor a sudo fallback. Replacements are atomic per file. Removing the
+secrets declaration or destroying a blueprint/host does not delete remote files. Files installed
 before a later deployment failure remain installed; retrying re-applies the
-desired files. Terraform tracks declaration and file-digest changes through the
+desired files. Terraform tracks changes to the secrets expression through the
 blueprint. Refresh observes the host system, not individual remote secrets.
 Keep external ciphertext preparation in a separate module and pass its encrypted
 output explicitly through `source_files`.
+
+#### External secret files
+
+Terraform observes values read by its expressions and data sources. It cannot
+discover files read only by Scheme: changing `private/identity` in the example
+above leaves the `secrets` string unchanged. Use native Terraform/OpenTofu change
+tracking for such inputs.
+
+**Image replacement:** wrap file hashes in the built-in `terraform_data` resource
+and reference it from `lifecycle.replace_triggered_by`:
+
+```hcl
+resource "terraform_data" "secret_files" {
+  input = {
+    identity = filesha256("${path.module}/private/identity")
+  }
+}
+
+resource "guix_image" "server" {
+  blueprint = guix_blueprint.server
+
+  lifecycle {
+    replace_triggered_by = [terraform_data.secret_files]
+  }
+}
+```
+
+The hash is recalculated during planning. Its change updates `terraform_data`,
+which replaces the image resource and provisions a fresh private artifact. The
+clean Guix base can still come from the cache. The hash need not be part of the
+blueprint or public build inputs, and `terraform_data` needs no extra provider.
+For a directory, `fileset()` plus `filesha256()` can form a map of file revisions;
+for another external system, a data source can supply its version or digest.
+
+**In-place host provisioning:** `replace_triggered_by` requests resource
+replacement, not a host update, and `depends_on` only controls ordering. To
+update both consumers without another provider attribute, include a revision
+comment in the private Scheme expression:
+
+```hcl
+resource "guix_blueprint" "server" {
+  os       = file("${path.module}/os.scm")
+  channels = file("${path.module}/channels-lock.scm")
+  secrets  = <<-SCM
+    ; identity revision: ${filesha256("${path.module}/private/identity")}
+    ${file("${path.module}/secrets.scm")}
+  SCM
+}
+```
+
+The comment changes the Terraform input while leaving Scheme's meaning intact.
+This replaces image consumers and triggers only file provisioning on hosts when
+their public configuration is unchanged. It can be used instead of the image's
+`terraform_data` trigger when both consumers should react. Inline contents read
+with `file()` or `filebase64()` and interpolated into the declaration also cause
+ordinary input changes and need no separate revision.
+
+Files read by these functions must be available when Terraform evaluates the
+configuration. Hashes/revisions detect changes; a `timestamp()` trigger would
+instead cause an action on every apply, including when files are unchanged.
+See the [OpenTofu built-in resource documentation](https://opentofu.org/docs/language/resources/tf-data/)
+and [Terraform lifecycle reference](https://developer.hashicorp.com/terraform/language/meta-arguments/lifecycle#replace_triggered_by).
 
 ### Source bundles
 
@@ -179,7 +257,7 @@ and `allow-downgrades?`, are preserved. The host's discovered address, effective
 host/provider SSH settings and leaf `system` override the corresponding machine
 fields; a supplied SSH session is cleared so those overrides take effect. With
 `os`, the provider constructs the SSH machine record itself. Keep private keys
-in SSH settings or secret descriptors rather than Scheme source strings.
+in SSH settings or the private `secrets` expression rather than public OS/image/machine source strings.
 
 `image_type` is optional. With an OS result, omitting it uses the pinned Guix
 version's default image type; setting it passes `--image-type` to Guix. With an

@@ -15,37 +15,33 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 )
 
-func privateBlueprint(t *testing.T, content, digest types.String) types.Object {
+func privateBlueprint(t *testing.T, content types.String) types.Object {
 	t.Helper()
 	var blueprint BlueprintModel
 	if d := testBlueprint(t).As(t.Context(), &blueprint, basetypes.ObjectAsOptions{}); d.HasError() {
 		t.Fatal(d)
 	}
-	digests := types.MapValueMust(types.StringType, map[string]attr.Value{"key": digest})
-	value, d := types.ObjectValueFrom(t.Context(), objectAttributeTypes(t, blueprintSecretsSchema().GetType()), SecretsModel{ID: types.StringUnknown(), Secrets: content, FileDigests: digests})
-	if d.HasError() {
-		t.Fatal(d)
-	}
-	blueprint.Secrets = value
+	blueprint.ID = types.StringUnknown()
+	blueprint.Secrets = content
 	return blueprintValue(t, blueprint)
 }
 
 func TestPrivateInputsKnownAndUnknown(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
-		content, digest types.String
-		known           bool
+		name    string
+		content types.String
+		known   bool
 	}{
-		{"known expression with unknown descriptor identity", types.StringValue("private"), types.StringValue("digest"), true},
-		{"unknown expression", types.StringUnknown(), types.StringValue("digest"), false},
-		{"unknown digest", types.StringValue("private"), types.StringUnknown(), false},
+		{"known expression with unknown blueprint identity", types.StringValue("private"), true},
+		{"unknown expression", types.StringUnknown(), false},
+		{"absent secrets", types.StringNull(), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			files, known, d := blueprintSecrets(t.Context(), privateBlueprint(t, tc.content, tc.digest))
+			files, known, d := blueprintSecrets(t.Context(), privateBlueprint(t, tc.content))
 			if d.HasError() || known != tc.known {
 				t.Fatalf("known=%t diagnostics=%v", known, d)
 			}
-			if known && files.Expression != "private" {
+			if known && files.Expression != tc.content.ValueString() {
 				t.Fatal("payload lost")
 			}
 		})
@@ -64,7 +60,7 @@ func TestHostSecretOnlyReconciliation(t *testing.T) {
 	if d := state.Get(t.Context(), &old); d.HasError() {
 		t.Fatal(d)
 	}
-	old.Blueprint = privateBlueprint(t, types.StringValue("v1"), types.StringValue("0600"))
+	old.Blueprint = privateBlueprint(t, types.StringValue("; source revision v1\n(secrets)"))
 	s, _, _ := blueprintSource(t.Context(), old.Blueprint, old.System, "machine")
 	backend.observed = desired(s)
 	if d := r.reconcile(t.Context(), &old, "create"); d.HasError() {
@@ -76,9 +72,9 @@ func TestHostSecretOnlyReconciliation(t *testing.T) {
 	if d := state.Set(t.Context(), &old); d.HasError() {
 		t.Fatal(d)
 	}
-	for i, mode := range []string{"0640", "0600"} {
+	for i, expression := range []string{"; source revision v2\n(secrets)", "; source revision v3\n(secrets)"} {
 		plan := tfsdk.Plan(state)
-		if d := plan.SetAttribute(t.Context(), path.Root("blueprint"), privateBlueprint(t, types.StringValue("v2"), types.StringValue(mode))); d.HasError() {
+		if d := plan.SetAttribute(t.Context(), path.Root("blueprint"), privateBlueprint(t, types.StringValue(expression))); d.HasError() {
 			t.Fatal(d)
 		}
 		planned := resource.ModifyPlanResponse{Plan: plan}
@@ -96,8 +92,8 @@ func TestHostSecretOnlyReconciliation(t *testing.T) {
 			t.Fatal(response.Diagnostics)
 		}
 		state = response.State
-		if backend.systemBuilds != 1 || backend.deployments != 0 || backend.hostProvisions != i+2 || backend.installedSecrets.FileDigests["key"] != mode {
-			t.Fatal("secret-only update rebuilt/reconfigured or lost its digest")
+		if backend.systemBuilds != 1 || backend.deployments != 0 || backend.hostProvisions != i+2 || backend.installedSecrets.Expression != expression {
+			t.Fatal("secret-only update rebuilt/reconfigured or lost its revision comment")
 		}
 	}
 }
@@ -114,7 +110,7 @@ func TestProvisioningFailurePreventsDeployment(t *testing.T) {
 	if d := state.Get(t.Context(), &model); d.HasError() {
 		t.Fatal(d)
 	}
-	model.Blueprint = privateBlueprint(t, types.StringValue("private"), types.StringValue("0600"))
+	model.Blueprint = privateBlueprint(t, types.StringValue("private"))
 	backend.provisionError = errors.New("installation failed")
 	previous := model.DeployedSystem
 	if d := r.reconcile(t.Context(), &model, "create"); !d.HasError() {
@@ -132,7 +128,7 @@ func TestImageProvisioningFailureReleasesRoot(t *testing.T) {
 	var response resource.SchemaResponse
 	r.Schema(t.Context(), resource.SchemaRequest{}, &response)
 	plan := tfsdk.Plan{Schema: response.Schema}
-	model := ImageModel{Name: types.StringValue("test"), Blueprint: privateBlueprint(t, types.StringValue("private"), types.StringValue("0600")), System: types.StringValue("x86_64-linux"), BuildTimeout: types.StringValue("1m")}
+	model := ImageModel{Name: types.StringValue("test"), Blueprint: privateBlueprint(t, types.StringValue("private")), System: types.StringValue("x86_64-linux"), BuildTimeout: types.StringValue("1m")}
 	if d := plan.Set(t.Context(), &model); d.HasError() {
 		t.Fatal(d)
 	}
@@ -154,7 +150,7 @@ func TestMissingExtensionFailsBeforeBuildOrContact(t *testing.T) {
 	var schema resource.SchemaResponse
 	r.Schema(t.Context(), resource.SchemaRequest{}, &schema)
 	plan := tfsdk.Plan{Schema: schema.Schema}
-	model := ImageModel{Name: types.StringValue("test"), Blueprint: privateBlueprint(t, types.StringValue("private"), types.StringValue("digest")), System: types.StringValue("x86_64-linux"), BuildTimeout: types.StringValue("1m")}
+	model := ImageModel{Name: types.StringValue("test"), Blueprint: privateBlueprint(t, types.StringValue("private")), System: types.StringValue("x86_64-linux"), BuildTimeout: types.StringValue("1m")}
 	if d := plan.Set(t.Context(), &model); d.HasError() {
 		t.Fatal(d)
 	}
@@ -188,7 +184,7 @@ func TestMissingPrivateImageReleasesBaseRoot(t *testing.T) {
 	if err := os.Symlink("/clean-image", base); err != nil {
 		t.Fatal(err)
 	}
-	model := ImageModel{ID: types.StringValue("11111111111111111111111111111111"), ArtifactPath: types.StringValue(root), StorePath: types.StringValue("/clean-image"), Blueprint: privateBlueprint(t, types.StringValue("private"), types.StringValue("digest"))}
+	model := ImageModel{ID: types.StringValue("11111111111111111111111111111111"), ArtifactPath: types.StringValue(root), StorePath: types.StringValue("/clean-image"), Blueprint: privateBlueprint(t, types.StringValue("private"))}
 	if err := releaseImage(model); err != nil {
 		t.Fatal(err)
 	}

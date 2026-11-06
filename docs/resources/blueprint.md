@@ -22,10 +22,22 @@ resource "guix_blueprint" "server" {
     "hosts/management.pub" = tls_private_key.management.public_key_openssh
   }
 
-  secrets = guix_secrets.server
+  # Sensitive provisioning input, separate from public source_files.
+  secrets = <<-SCM
+    (use-modules (guix secrets) (guix base64))
+    (secrets
+      (files (list (secret-file
+                     (destination "/etc/example/private-key")
+                     (content (base64-decode "${base64encode(var.private_key)}"))))))
+  SCM
 
   # Optional independent image/machine expressions take precedence over os in
   # their respective leaves. A blueprint may also omit all three specifications.
+}
+
+variable "private_key" {
+  type      = string
+  sensitive = true
 }
 
 resource "guix_image" "server" {
@@ -56,21 +68,9 @@ resource "guix_host" "server" {
 - `image` (String) Scheme source evaluating to a Guix image record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
 - `machine` (String) Scheme source evaluating to a Guix machine record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
 - `os` (String) Scheme source evaluating to a Guix operating-system record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
-- `secrets` (Attributes) Private provisioning declaration, normally guix_secrets.<name>. Images install it after building; hosts install it before any required deployment. Requires the installed guix secrets extension in the pinned channels. (see [below for nested schema](#nestedatt--secrets))
+- `secrets` (String, Sensitive) Private Scheme source evaluating to a (guix secrets) secrets record. Accepts raw source, file(), templatefile(), or an explicit load expression. Evaluated by image and host consumers during apply, outside public Guix build inputs. Relative sources and load expressions use the Terraform working directory; use absolute paths for module-local files. Requires the installed guix secrets extension in the pinned channels. External file changes can trigger image replacement through terraform_data and lifecycle.replace_triggered_by; see the provider's private file provisioning documentation.
 - `source_files` (Map of String) Public supporting files keyed by normalized relative path, including Scheme modules, local assets and encrypted documents. Provider filenames are reserved.
 
 ### Read-Only
 
 - `id` (String) Stable identity of the configuration descriptor.
-
-<a id="nestedatt--secrets"></a>
-### Nested Schema for `secrets`
-
-Required:
-
-- `secrets` (String, Sensitive) Scheme source evaluating to a (guix secrets) secrets-configuration record. Accepts raw source, file(), templatefile(), or an explicit load expression. Evaluated only by a consuming leaf during apply. Relative sources and load expressions use the Terraform working directory; use absolute paths when referencing module-local files.
-
-Optional:
-
-- `file_digests` (Map of String, Sensitive) Explicit file change triggers, normally { name = filesha256(path) }. Terraform recalculates these during planning. Use for source files read by Scheme; the provider does not discover or evaluate private sources during planning. Keys are descriptive names, values are digests. Excluded from public Guix build inputs.
-- `id` (String) Secret descriptor resource identity.

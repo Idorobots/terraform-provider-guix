@@ -22,7 +22,7 @@
        guix secrets deploy --secrets=FILE MACHINE.scm...
 
 Provision files only. No system builds, reconfiguration or service restarts.
-Secrets files evaluate to a (guix secrets) secrets-configuration record.
+Secrets files evaluate to a (guix secrets) secrets record.
 Image root and mount layout come from the declaration. Supports ext2/3/4 and
 Btrfs in raw MBR/GPT artifacts. FUSE is preferred for ext filesystems;
 kernel mounts use Polkit when the caller is unprivileged.

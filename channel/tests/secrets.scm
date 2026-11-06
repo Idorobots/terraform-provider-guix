@@ -124,7 +124,7 @@
       (call-with-output-file source (lambda (port) (display "bytes" port)))
       (call-with-output-file declaration
         (lambda (port)
-          (display "(use-modules (guix secrets))\n(secrets-configuration (files (list (secret-file (source \"source\") (destination \"/etc/key\")) (secret-file (content #vu8(0 255)) (destination \"/etc/binary\")) (secret-file (content \"\") (destination \"/etc/empty\")))))" port)))
+          (display "(use-modules (guix secrets))\n(secrets (files (list (secret-file (source \"source\") (destination \"/etc/key\")) (secret-file (content #vu8(0 255)) (destination \"/etc/binary\")) (secret-file (content \"\") (destination \"/etc/empty\")))))" port)))
       (test-equal "Scheme declarations preserve relative sources, binary and empty payloads"
                   `(("/etc/key" 384 ,(string->utf8 "bytes")) ("/etc/binary" 384 #vu8(0 255)) ("/etc/empty" 384 #vu8()))
                   (load-secrets declaration))
@@ -140,7 +140,7 @@
        (private-port (mkstemp! private))
        (definition "(use-modules (gnu system) (gnu image) (gnu bootloader) (gnu bootloader grub) (gnu system file-systems))\n(define os (operating-system (host-name \"test\") (timezone \"Etc/UTC\") (locale \"en_US.utf8\") (bootloader (bootloader-configuration (bootloader grub-bootloader) (targets '(\"/dev/vda\")))) (file-systems (list (file-system (mount-point \"/\") (device \"/dev/vda1\") (type \"ext4\"))))))\n"))
   (close-port port)
-  (display "(secrets-configuration)\n" private-port) (close-port private-port)
+  (display "(secrets)\n" private-port) (close-port private-port)
   (dynamic-wind
     (const #t)
     (lambda ()

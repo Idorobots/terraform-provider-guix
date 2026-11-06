@@ -151,7 +151,7 @@ func TestPrivateSchemeCLIIsInterpretedAndErrorsAreRedacted(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(private, []byte(`(use-modules (guix secrets)) (secrets-configuration)`), 0600); err != nil {
+	if err := os.WriteFile(private, []byte(`(use-modules (guix secrets)) (secrets)`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	machines := filepath.Join(t.TempDir(), "machines.scm")

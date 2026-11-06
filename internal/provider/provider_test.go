@@ -189,7 +189,7 @@ func TestProviderSchema(t *testing.T) {
 			t.Fatal(diagnostic.Detail)
 		}
 	}
-	for _, name := range []string{"guix_blueprint", "guix_image", "guix_host", "guix_secrets"} {
+	for _, name := range []string{"guix_blueprint", "guix_image", "guix_host"} {
 		if response.ResourceSchemas[name] == nil {
 			t.Fatalf("missing %s", name)
 		}

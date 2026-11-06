@@ -27,7 +27,7 @@ type BlueprintModel struct {
 	Machine     types.String `tfsdk:"machine"`
 	Channels    types.String `tfsdk:"channels"`
 	SourceFiles types.Map    `tfsdk:"source_files"`
-	Secrets     types.Object `tfsdk:"secrets"`
+	Secrets     types.String `tfsdk:"secrets"`
 }
 
 func blueprintAttributes() map[string]schema.Attribute {
@@ -45,7 +45,7 @@ func blueprintAttributes() map[string]schema.Attribute {
 func blueprintSchema() schema.SingleNestedAttribute {
 	attrs := blueprintAttributes()
 	attrs["id"] = schema.StringAttribute{Optional: true, MarkdownDescription: "Blueprint resource identity. Normally supplied by guix_blueprint.<name>; not a build input."}
-	return schema.SingleNestedAttribute{Required: true, MarkdownDescription: "Shared configuration descriptor, normally guix_blueprint.<name>. Contains optional OS, image and machine specifications, pinned channels, supporting sources and secret descriptors. Architecture and operation settings belong to this leaf.", Attributes: attrs}
+	return schema.SingleNestedAttribute{Required: true, MarkdownDescription: "Shared configuration descriptor, normally guix_blueprint.<name>. Contains optional OS, image and machine specifications, pinned channels, supporting sources and a private secrets declaration. Architecture and operation settings belong to this leaf.", Attributes: attrs}
 }
 
 type sourcePaths struct{}
@@ -67,7 +67,7 @@ func (sourcePaths) ValidateMap(_ context.Context, req validator.MapRequest, resp
 
 // blueprintSource selects only this operation's effective public inputs. Unknown
 // preferred specifications defer selection; they must not fall back to the OS.
-// Secret descriptors and unused specifications never enter a Guix source digest.
+// Secrets and unused specifications never enter a Guix source digest.
 func blueprintSource(ctx context.Context, value types.Object, system types.String, preferred string) (guix.Source, bool, diag.Diagnostics) {
 	var diagnostics diag.Diagnostics
 	var s guix.Source

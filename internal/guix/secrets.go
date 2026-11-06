@@ -9,11 +9,9 @@ import (
 )
 
 // SecretConfiguration is private provisioning input, never a Guix build input.
-// FileDigests are explicit Terraform change triggers; Scheme is evaluated only
-// by the installed extension during apply.
+// Scheme is evaluated only by the installed extension during apply.
 type SecretConfiguration struct {
-	Expression  string
-	FileDigests map[string]string
+	Expression string
 }
 
 func (c Client) CheckSecrets(ctx context.Context, source Source) error {

@@ -86,7 +86,7 @@ func (p *GuixProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 }
 
 func (*GuixProvider) Resources(context.Context) []func() resource.Resource {
-	return []func() resource.Resource{NewBlueprintResource, NewImageResource, NewHostResource, NewSecretsResource}
+	return []func() resource.Resource{NewBlueprintResource, NewImageResource, NewHostResource}
 }
 
 func (*GuixProvider) DataSources(context.Context) []func() datasource.DataSource { return nil }

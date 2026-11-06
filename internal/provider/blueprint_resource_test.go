@@ -44,7 +44,7 @@ func testBlueprint(t *testing.T) types.Object {
 		ID: types.StringValue("blueprint-id"), OS: types.StringValue("blueprint OS"),
 		Channels:    types.StringValue("blueprint channels"),
 		SourceFiles: types.MapValueMust(types.StringType, map[string]attr.Value{"asset": types.StringValue("public asset")}),
-		Secrets:     types.ObjectNull(objectAttributeTypes(t, blueprintSecretsSchema().GetType())),
+		Secrets:     types.StringNull(),
 	})
 }
 
@@ -63,7 +63,7 @@ func TestBlueprintSourceSelection(t *testing.T) {
 			{"missing", types.StringNull(), types.StringNull(), "os", false, true},
 		} {
 			t.Run(preferred+"/"+tc.name, func(t *testing.T) {
-				m := BlueprintModel{OS: tc.os, Channels: types.StringValue("pinned"), Secrets: types.ObjectNull(objectAttributeTypes(t, blueprintSecretsSchema().GetType()))}
+				m := BlueprintModel{OS: tc.os, Channels: types.StringValue("pinned"), Secrets: types.StringNull()}
 				if preferred == "image" {
 					m.Image = tc.selected
 				} else {

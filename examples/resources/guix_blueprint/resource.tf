@@ -7,10 +7,22 @@ resource "guix_blueprint" "server" {
     "hosts/management.pub" = tls_private_key.management.public_key_openssh
   }
 
-  secrets = guix_secrets.server
+  # Sensitive provisioning input, separate from public source_files.
+  secrets = <<-SCM
+    (use-modules (guix secrets) (guix base64))
+    (secrets
+      (files (list (secret-file
+                     (destination "/etc/example/private-key")
+                     (content (base64-decode "${base64encode(var.private_key)}"))))))
+  SCM
 
   # Optional independent image/machine expressions take precedence over os in
   # their respective leaves. A blueprint may also omit all three specifications.
+}
+
+variable "private_key" {
+  type      = string
+  sensitive = true
 }
 
 resource "guix_image" "server" {

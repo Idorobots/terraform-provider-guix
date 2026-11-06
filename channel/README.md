@@ -33,12 +33,12 @@ GUIX_EXTENSIONS_PATH="$PWD/channel/modules" guix secrets --help
 
 ## Secrets declarations
 
-Both commands accept a Scheme file evaluating to a `secrets-configuration`:
+Both commands accept a Scheme file evaluating to a `secrets` record:
 
 ```scheme
 (use-modules (guix secrets))
 
-(secrets-configuration
+(secrets
   (files
     (list
       (secret-file
@@ -131,15 +131,22 @@ machines, and removing an entry does not delete an installed file.
 
 ## Terraform change tracking
 
-`guix_secrets.secrets` contains the private Scheme expression. Inline contents
-change that expression naturally. For external source files, explicitly supply
-`file_digests = { name = filesha256(path) }`. Terraform recalculates the digests
-during planning; changes replace image consumers and update host consumers.
-Digest keys are change-trigger names, not a source-file allowlist or checksum
-verification protocol. Scheme is evaluated only during apply. Relative paths in
-provider-generated declarations use the Terraform working directory; use
-`abspath()` in module templates for module-local sources. Neither declarations
-nor file digests enter public build inputs.
+`guix_blueprint.secrets` contains the private Scheme expression directly. Inline
+contents change that expression naturally; no additional resource or digest is
+needed for Terraform-generated keys. Scheme is evaluated only during apply.
+Relative paths in provider-generated declarations use the Terraform working
+directory; use `abspath()` in module templates for module-local sources. Private
+declarations stay outside public build inputs.
+
+Terraform does not observe files read only by Scheme. Use a built-in
+`terraform_data` resource with `input = { name = filesha256(path) }` and an image's
+`lifecycle.replace_triggered_by` to regenerate its private artifact when external
+files change. This requests image replacement, not an in-place host update.
+For in-place host provisioning as well, include file revisions in a Scheme
+comment in `blueprint.secrets`, so ordinary Terraform input differences drive
+both consumers. See the complete [external secret file patterns](../README.md#external-secret-files),
+including reusable HCL examples. Neither pattern requires evaluating Scheme
+during planning or adding private inputs to a Guix derivation.
 
 ## Checks
 
