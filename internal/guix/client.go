@@ -139,7 +139,9 @@ func (c Client) BuildImage(ctx context.Context, source Source, imageType, target
 	if target != "" {
 		architecture = "--target=" + target
 	}
-	args := []string{"image"}
+	// Image builds default to quiet mode, which hides builder output even when
+	// the runner streams stderr. Level 3 includes the live build log.
+	args := []string{"image", "--verbosity=3"}
 	if imageType != "" {
 		args = append(args, "--image-type="+imageType)
 	}

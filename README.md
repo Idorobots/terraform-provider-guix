@@ -443,6 +443,21 @@ binary when running `tofu plan`/`tofu apply`; it does not publish the provider t
 the registry. Initialize other providers (such as `hashicorp/tls`) separately if
 needed while this provider is unpublished.
 
+## Subprocess logs
+
+Guix build subprocess stdout and stderr stream as INFO provider logs, with
+`command`, `stream`, and `output` fields. Image builds explicitly use
+`--verbosity=3`, since Guix's default image verbosity suppresses builder logs.
+Enable them when applying:
+
+```shell
+TF_LOG=INFO TF_LOG_PATH="$PWD/tofu.log" tofu apply
+```
+
+Follow the log from another terminal with `tail -f tofu.log`. Output continues
+streaming beyond the provider's 64 KiB diagnostic capture limit. Command arguments
+and private `guix secrets` subprocess output are not logged.
+
 ## Architecture
 
 - `internal/provider`: provider schemas and lifecycles.

@@ -6,10 +6,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"slices"
 	"syscall"
 	"time"
+
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
 // Runner keeps command execution injectable and stdout separate from diagnostics.
@@ -30,6 +33,41 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 		_, _ = b.Buffer.Write(p)
 	}
 	return n, nil
+}
+
+type subprocessLog struct {
+	ctx             context.Context
+	command, stream string
+	pending         bytes.Buffer
+}
+
+func (w *subprocessLog) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 {
+		// Bound unfinished lines as well as the separately captured output.
+		chunk := p[:min(len(p), 64*1024-w.pending.Len())]
+		if end := bytes.IndexAny(chunk, "\r\n"); end >= 0 {
+			w.pending.Write(chunk[:end])
+			w.flush()
+			p = p[end+1:]
+		} else {
+			w.pending.Write(chunk)
+			p = p[len(chunk):]
+			if w.pending.Len() == 64*1024 {
+				w.flush()
+			}
+		}
+	}
+	return n, nil
+}
+
+func (w *subprocessLog) flush() {
+	if w.pending.Len() > 0 {
+		tflog.Info(w.ctx, "Subprocess output", map[string]any{
+			"command": w.command, "stream": w.stream, "output": w.pending.String(),
+		})
+		w.pending.Reset()
+	}
 }
 
 func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) (string, string, error) {
@@ -56,6 +94,15 @@ func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) (st
 	cmd.WaitDelay = 7 * time.Second
 	var out, stderr limitedBuffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
+	if !slices.Contains(args, "secrets") || slices.Contains(args, "--help") {
+		// Private Scheme evaluated by guix secrets may print sensitive contents.
+		// Its --help preflight evaluates no secrets; retain time-machine progress.
+		stdoutLog := &subprocessLog{ctx: ctx, command: name, stream: "stdout"}
+		stderrLog := &subprocessLog{ctx: ctx, command: name, stream: "stderr"}
+		cmd.Stdout, cmd.Stderr = io.MultiWriter(&out, stdoutLog), io.MultiWriter(&stderr, stderrLog)
+		defer stdoutLog.flush()
+		defer stderrLog.flush()
+	}
 	err := cmd.Run()
 	close(done)
 	if ctx.Err() != nil {

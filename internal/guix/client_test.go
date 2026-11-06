@@ -80,6 +80,9 @@ func TestGuixSubcommandLoadPath(t *testing.T) {
 				if binary != "guix" || len(args) < len(want) || !slices.Equal(args[:len(want)], want) {
 					t.Fatalf("invalid Guix command: %s %v; want guix %v ...", binary, args, want)
 				}
+				if tt.action == "image" && !slices.Contains(args, "--verbosity=3") {
+					t.Fatal("image build does not enable live builder output")
+				}
 				return "", "", stopped
 			})
 			if err := tt.invoke(Client{Runner: runner}); !called || !errors.Is(err, stopped) {
