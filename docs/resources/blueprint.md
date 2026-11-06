@@ -56,7 +56,7 @@ resource "guix_host" "server" {
 - `image` (String) Scheme source evaluating to a Guix image record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
 - `machine` (String) Scheme source evaluating to a Guix machine record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
 - `os` (String) Scheme source evaluating to a Guix operating-system record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
-- `secrets` (Attributes) Secret file descriptor, normally guix_secrets.<name>. Records dependencies and sensitive file contents only. Consuming leaves do not yet install these files. (see [below for nested schema](#nestedatt--secrets))
+- `secrets` (Attributes) Private files, normally guix_secrets.<name>. Images install these after building; hosts install them before any required Guix deployment. (see [below for nested schema](#nestedatt--secrets))
 - `source_files` (Map of String) Public supporting files keyed by normalized relative path, including Scheme modules, local assets and encrypted documents. Provider filenames are reserved.
 
 ### Read-Only
@@ -68,7 +68,7 @@ resource "guix_host" "server" {
 
 Required:
 
-- `files` (Attributes Map) Files keyed by absolute destination path. Contents are sensitive and remain outside the Guix source bundle. Files are currently descriptors only; no installation is performed. Future installation defaults to root ownership. (see [below for nested schema](#nestedatt--secrets--files))
+- `files` (Attributes Map) Files keyed by absolute destination path. Consuming images and hosts install these files outside /gnu/store with root ownership. Contents are sensitive and remain outside the Guix source bundle. (see [below for nested schema](#nestedatt--secrets--files))
 - `id` (String) Secret descriptor resource identity.
 
 <a id="nestedatt--secrets--files"></a>
@@ -80,4 +80,4 @@ Required:
 
 Optional:
 
-- `mode` (String) Unix file mode for future installation; defaults to 0600.
+- `mode` (String) Installed Unix file mode; defaults to 0600.

@@ -28,16 +28,17 @@ var _ resource.ResourceWithImportState = &HostResource{}
 
 type HostResource struct{ client *Client }
 type HostModel struct {
-	ID                 types.String `tfsdk:"id"`
-	Hostname           types.String `tfsdk:"hostname"`
-	Blueprint          types.Object `tfsdk:"blueprint"`
-	System             types.String `tfsdk:"system"`
-	SSH                types.Object `tfsdk:"ssh"`
-	Timeouts           types.Object `tfsdk:"timeouts"`
-	IPv4               types.String `tfsdk:"ipv4_address"`
-	SystemPath         types.String `tfsdk:"system_path"`
-	DeployedSystem     types.String `tfsdk:"deployed_system"`
-	DeploymentRevision types.String `tfsdk:"deployment_revision"`
+	ID                   types.String `tfsdk:"id"`
+	Hostname             types.String `tfsdk:"hostname"`
+	Blueprint            types.Object `tfsdk:"blueprint"`
+	System               types.String `tfsdk:"system"`
+	SSH                  types.Object `tfsdk:"ssh"`
+	Timeouts             types.Object `tfsdk:"timeouts"`
+	IPv4                 types.String `tfsdk:"ipv4_address"`
+	SystemPath           types.String `tfsdk:"system_path"`
+	DeployedSystem       types.String `tfsdk:"deployed_system"`
+	DeploymentRevision   types.String `tfsdk:"deployment_revision"`
+	ProvisioningRevision types.String `tfsdk:"provisioning_revision"`
 }
 
 type TimeoutsModel struct {
@@ -66,6 +67,7 @@ func (*HostResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 	attrs["system_path"] = computedString("Currently observed /run/current-system store path.", false)
 	attrs["deployed_system"] = computedString("Last successfully reconciled system store path. Retained during refresh to detect rollback drift.", false)
 	attrs["deployment_revision"] = computedString("Source digest of the last successful reconciliation.", false)
+	attrs["provisioning_revision"] = schema.StringAttribute{Computed: true, Sensitive: true, MarkdownDescription: "Private digest of the last successfully installed file contents, modes and provisioner implementation. Secret-only updates install files without reconfiguring the system."}
 	resp.Schema = schema.Schema{MarkdownDescription: "A reachable Guix installation discovered via mDNS. Create waits for manual flashing/boot and reconciles the desired system; updates use pinned guix deploy. Unreachable hosts are removed from state after the read timeout. Destroy only forgets the host.", Attributes: attrs}
 }
 func (r *HostResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -136,11 +138,13 @@ func (r *HostResource) wait(ctx context.Context, hostname string, d guix.Destina
 	}
 }
 
-func (r *HostResource) reconcile(ctx context.Context, model *HostModel, operation string) diag.Diagnostics {
+func (r *HostResource) reconcile(ctx context.Context, model *HostModel, operation string, cachedSystem ...string) diag.Diagnostics {
 	d, diagnostics := destination(ctx, model.SSH, r.client.SSH)
 	s, known, sourceDiagnostics := blueprintSource(ctx, model.Blueprint, model.System, "machine")
 	diagnostics.Append(sourceDiagnostics...)
-	if !known && !diagnostics.HasError() {
+	files, secretsKnown, secretDiagnostics := blueprintSecretFiles(ctx, model.Blueprint)
+	diagnostics.Append(secretDiagnostics...)
+	if (!known || !secretsKnown) && !diagnostics.HasError() {
 		diagnostics.AddError("Unknown Guix host inputs", "The selected blueprint specification, channels, source files and system must be known before reconciliation.")
 	}
 	duration, timeoutDiagnostics := hostTimeout(ctx, model.Timeouts, operation)
@@ -159,9 +163,19 @@ func (r *HostResource) reconcile(ctx context.Context, model *HostModel, operatio
 		diagnostics.AddError("Guix host unavailable", err.Error())
 		return diagnostics
 	}
-	expected, err := r.client.Guix.BuildSystem(ctx, s)
-	if err != nil {
-		diagnostics.AddError("Build desired Guix system", err.Error())
+	expected := ""
+	if len(cachedSystem) != 0 {
+		expected = cachedSystem[0]
+	}
+	if expected == "" {
+		expected, err = r.client.Guix.BuildSystem(ctx, s)
+		if err != nil {
+			diagnostics.AddError("Build desired Guix system", err.Error())
+			return diagnostics
+		}
+	}
+	if err := r.client.Guix.ProvisionHost(ctx, s.Channels, files, d); err != nil {
+		diagnostics.AddError("Guix secret provisioning failed", err.Error())
 		return diagnostics
 	}
 	if observed != expected {
@@ -178,6 +192,7 @@ func (r *HostResource) reconcile(ctx context.Context, model *HostModel, operatio
 	model.ID = types.StringValue(model.Hostname.ValueString())
 	model.IPv4, model.SystemPath = types.StringValue(d.Address), types.StringValue(observed)
 	model.DeployedSystem, model.DeploymentRevision = types.StringValue(expected), types.StringValue(s.Digest())
+	model.ProvisioningRevision = types.StringValue(files.Revision())
 	return diagnostics
 }
 
@@ -200,7 +215,11 @@ func (r *HostResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 	if hostNeedsReconcile(ctx, model, old) {
-		resp.Diagnostics.Append(r.reconcile(ctx, &model, "update")...)
+		cached := ""
+		if s, known, diagnostics := blueprintSource(ctx, model.Blueprint, model.System, "machine"); known && !diagnostics.HasError() && s.Digest() == old.DeploymentRevision.ValueString() {
+			cached = old.DeployedSystem.ValueString()
+		}
+		resp.Diagnostics.Append(r.reconcile(ctx, &model, "update", cached)...)
 	}
 	if !resp.Diagnostics.HasError() {
 		resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
@@ -237,6 +256,7 @@ func (r *HostResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	model.IPv4, model.SystemPath = types.StringValue(d.Address), types.StringValue(observed)
 	if model.DeployedSystem.IsNull() {
 		model.DeployedSystem, model.DeploymentRevision = types.StringValue(observed), types.StringValue("imported")
+		model.ProvisioningRevision = types.StringValue("")
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
 }
@@ -268,8 +288,8 @@ func (*HostResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequ
 		return
 	}
 	needsReconcile := hostNeedsReconcile(ctx, model, old)
-	inputsChanged := hostInputsChanged(ctx, model, old)
-	for name, value := range map[string]types.String{"ipv4_address": old.IPv4, "system_path": old.SystemPath, "deployed_system": old.DeployedSystem, "deployment_revision": old.DeploymentRevision} {
+	inputsChanged := hostPublicInputsChanged(ctx, model, old)
+	for name, value := range map[string]types.String{"ipv4_address": old.IPv4, "system_path": old.SystemPath, "deployed_system": old.DeployedSystem, "deployment_revision": old.DeploymentRevision, "provisioning_revision": old.ProvisioningRevision} {
 		if needsReconcile && (name != "ipv4_address" || inputsChanged) {
 			// This also requests reconciliation after an external rollback, when
 			// the only state change is a computed observation.
@@ -284,9 +304,13 @@ func hostNeedsReconcile(ctx context.Context, plan, old HostModel) bool {
 }
 
 func hostInputsChanged(ctx context.Context, plan, old HostModel) bool {
+	files, secretsKnown, secretDiagnostics := blueprintSecretFiles(ctx, plan.Blueprint)
+	return hostPublicInputsChanged(ctx, plan, old) || secretDiagnostics.HasError() || !secretsKnown || old.ProvisioningRevision.ValueString() != files.Revision()
+}
+
+func hostPublicInputsChanged(ctx context.Context, plan, old HostModel) bool {
 	s, known, diagnostics := blueprintSource(ctx, plan.Blueprint, plan.System, "machine")
-	return diagnostics.HasError() || !known || !plan.SSH.Equal(old.SSH) ||
-		old.DeploymentRevision.ValueString() != s.Digest()
+	return diagnostics.HasError() || !known || !plan.SSH.Equal(old.SSH) || old.DeploymentRevision.ValueString() != s.Digest()
 }
 func (*HostResource) Delete(context.Context, resource.DeleteRequest, *resource.DeleteResponse) {}
 func (*HostResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

@@ -22,11 +22,20 @@ func blueprintValue(t *testing.T, m BlueprintModel) types.Object {
 	if m.SourceFiles.IsNull() {
 		m.SourceFiles = types.MapNull(types.StringType)
 	}
-	value, diagnostics := types.ObjectValueFrom(t.Context(), blueprintSchema().GetType().(types.ObjectType).AttrTypes, m)
+	value, diagnostics := types.ObjectValueFrom(t.Context(), objectAttributeTypes(t, blueprintSchema().GetType()), m)
 	if diagnostics.HasError() {
 		t.Fatal(diagnostics)
 	}
 	return value
+}
+
+func objectAttributeTypes(t *testing.T, value attr.Type) map[string]attr.Type {
+	t.Helper()
+	object, ok := value.(types.ObjectType)
+	if !ok {
+		t.Fatal("expected an object attribute type")
+	}
+	return object.AttrTypes
 }
 
 func testBlueprint(t *testing.T) types.Object {
@@ -35,7 +44,7 @@ func testBlueprint(t *testing.T) types.Object {
 		ID: types.StringValue("blueprint-id"), OS: types.StringValue("blueprint OS"),
 		Channels:    types.StringValue("blueprint channels"),
 		SourceFiles: types.MapValueMust(types.StringType, map[string]attr.Value{"asset": types.StringValue("public asset")}),
-		Secrets:     types.ObjectNull(blueprintSecretsSchema().GetType().(types.ObjectType).AttrTypes),
+		Secrets:     types.ObjectNull(objectAttributeTypes(t, blueprintSecretsSchema().GetType())),
 	})
 }
 
@@ -54,7 +63,7 @@ func TestBlueprintSourceSelection(t *testing.T) {
 			{"missing", types.StringNull(), types.StringNull(), "os", false, true},
 		} {
 			t.Run(preferred+"/"+tc.name, func(t *testing.T) {
-				m := BlueprintModel{OS: tc.os, Channels: types.StringValue("pinned"), Secrets: types.ObjectNull(blueprintSecretsSchema().GetType().(types.ObjectType).AttrTypes)}
+				m := BlueprintModel{OS: tc.os, Channels: types.StringValue("pinned"), Secrets: types.ObjectNull(objectAttributeTypes(t, blueprintSecretsSchema().GetType()))}
 				if preferred == "image" {
 					m.Image = tc.selected
 				} else {
@@ -80,7 +89,7 @@ func TestHostBlueprintCommissioningInfoLog(t *testing.T) {
 	if diagnostics := state.Get(t.Context(), &model); diagnostics.HasError() {
 		t.Fatal(diagnostics)
 	}
-	client.SSH = types.ObjectValueMust(sshSchema().GetType().(types.ObjectType).AttrTypes, map[string]attr.Value{
+	client.SSH = types.ObjectValueMust(objectAttributeTypes(t, sshSchema().GetType()), map[string]attr.Value{
 		"host_key": types.StringValue("fake host key"), "private_key": types.StringValue("fake management key"),
 		"identity_file": types.StringNull(), "user": types.StringNull(), "port": types.Int64Null(),
 	})

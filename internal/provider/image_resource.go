@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/SpartanWorks/terraform-provider-guix/internal/guix"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -28,17 +29,18 @@ var _ resource.ResourceWithModifyPlan = &ImageResource{}
 
 type ImageResource struct{ client *Client }
 type ImageModel struct {
-	ID           types.String `tfsdk:"id"`
-	Name         types.String `tfsdk:"name"`
-	Blueprint    types.Object `tfsdk:"blueprint"`
-	System       types.String `tfsdk:"system"`
-	Target       types.String `tfsdk:"target"`
-	ImageType    types.String `tfsdk:"image_type"`
-	ArtifactPath types.String `tfsdk:"artifact_path"`
-	StorePath    types.String `tfsdk:"store_path"`
-	SHA256       types.String `tfsdk:"sha256"`
-	InputDigest  types.String `tfsdk:"input_digest"`
-	BuildTimeout types.String `tfsdk:"build_timeout"`
+	ID                   types.String `tfsdk:"id"`
+	Name                 types.String `tfsdk:"name"`
+	Blueprint            types.Object `tfsdk:"blueprint"`
+	System               types.String `tfsdk:"system"`
+	Target               types.String `tfsdk:"target"`
+	ImageType            types.String `tfsdk:"image_type"`
+	ArtifactPath         types.String `tfsdk:"artifact_path"`
+	StorePath            types.String `tfsdk:"store_path"`
+	SHA256               types.String `tfsdk:"sha256"`
+	InputDigest          types.String `tfsdk:"input_digest"`
+	BuildTimeout         types.String `tfsdk:"build_timeout"`
+	ProvisioningRevision types.String `tfsdk:"provisioning_revision"`
 }
 
 func NewImageResource() resource.Resource { return &ImageResource{} }
@@ -51,12 +53,13 @@ func (*ImageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 	attrs["id"] = computedString("Unique resource identity, owning an independent image GC root.", true)
 	attrs["image_type"] = schema.StringAttribute{Optional: true, MarkdownDescription: "Guix image type for an operating-system configuration, including types exported by pinned channels. Omit to use the pinned Guix default. An image specification determines its own layout, following native Guix behavior.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("nonempty string")}}
 	attrs["target"] = schema.StringAttribute{Optional: true, MarkdownDescription: "GNU target triplet for cross-compiling the image, for example aarch64-linux-gnu. Builds use the runner's native system; host system builds and deployments still use system.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringCheck("nonempty string")}}
-	attrs["artifact_path"] = computedString("Persistent image symlink and Guix GC root. Available under artifact_directory/<name>/<id>/image during manual commissioning.", false)
-	attrs["store_path"] = computedString("Immutable Guix store image path.", false)
+	attrs["artifact_path"] = computedString("Flashable image under artifact_directory/<name>/<id>/image. A private mode-0600 copy when secrets are attached; otherwise a symlink to the clean image.", false)
+	attrs["store_path"] = computedString("Clean immutable Guix store image path, retained by the adjacent base-image GC root. Contains no provisioned secrets.", false)
 	attrs["sha256"] = computedString("SHA256 checksum of the image bytes.", false)
 	attrs["input_digest"] = computedString("Digest of the configuration, channels, system, cross target and source files.", false)
+	attrs["provisioning_revision"] = schema.StringAttribute{Computed: true, Sensitive: true, MarkdownDescription: "Private digest of installed file contents, modes and the bundled provisioner implementation."}
 	attrs["build_timeout"] = schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("2h"), MarkdownDescription: "Image build deadline.", Validators: []validator.String{stringCheck("positive duration")}}
-	resp.Schema = schema.Schema{MarkdownDescription: "Build an immutable Guix System image with pinned channels. Flash and boot it manually; the provider retains it using a per-resource GC root. Destroy releases only that reference.", Attributes: attrs}
+	resp.Schema = schema.Schema{MarkdownDescription: "Build a Guix System image with pinned channels, then provision attached private files outside the store using guix secrets image. FUSE mounts are preferred; Polkit authentication is requested when FUSE is unavailable. Flash and boot the final artifact manually. Destroy deletes the owned private copy and releases its clean-image GC root.", Attributes: attrs}
 }
 func (r *ImageResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
@@ -77,7 +80,9 @@ func (r *ImageResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 	s, known, diagnostics := blueprintSource(ctx, m.Blueprint, m.System, "image")
 	resp.Diagnostics.Append(diagnostics...)
-	if !known && !resp.Diagnostics.HasError() {
+	files, secretsKnown, secretDiagnostics := blueprintSecretFiles(ctx, m.Blueprint)
+	resp.Diagnostics.Append(secretDiagnostics...)
+	if (!known || !secretsKnown) && !resp.Diagnostics.HasError() {
 		resp.Diagnostics.AddError("Unknown Guix image inputs", "The selected blueprint specification, channels, source files and system must be known before building.")
 	}
 	if resp.Diagnostics.HasError() {
@@ -97,14 +102,33 @@ func (r *ImageResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 	m.ID = types.StringValue(hex.EncodeToString(id))
 	root := filepath.Join(r.client.ArtifactDirectory, m.Name.ValueString(), m.ID.ValueString(), "image")
-	store, checksum, err := r.client.Guix.BuildImage(ctx, s, m.ImageType.ValueString(), m.Target.ValueString(), root)
+	base := filepath.Join(filepath.Dir(root), "base-image")
+	complete := false
+	defer func() {
+		if !complete {
+			_ = os.Remove(root)
+			_ = os.Remove(base)
+			_ = os.Remove(filepath.Dir(root))
+		}
+	}()
+	store, checksum, err := r.client.Guix.BuildImage(ctx, s, m.ImageType.ValueString(), m.Target.ValueString(), base)
 	if err != nil {
-		_ = os.Remove(root)
 		resp.Diagnostics.AddError("Guix image build failed", err.Error())
 		return
 	}
+	if len(files) != 0 {
+		checksum, err = r.client.Guix.ProvisionImage(ctx, s.Channels, files, store, root)
+	} else {
+		err = os.Symlink(store, root)
+	}
+	if err != nil {
+		resp.Diagnostics.AddError("Guix image provisioning failed", err.Error())
+		return
+	}
 	m.ArtifactPath, m.StorePath, m.SHA256, m.InputDigest = types.StringValue(root), types.StringValue(store), types.StringValue(checksum), types.StringValue(s.ImageDigest(m.Target.ValueString()))
+	m.ProvisioningRevision = types.StringValue(files.Revision())
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+	complete = !resp.Diagnostics.HasError()
 }
 func (*ImageResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var m ImageModel
@@ -112,8 +136,12 @@ func (*ImageResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	resolved, err := filepath.EvalSymlinks(m.ArtifactPath.ValueString())
+	info, err := os.Lstat(m.ArtifactPath.ValueString())
 	if errors.Is(err, os.ErrNotExist) {
+		if err := releaseImage(m); err != nil {
+			resp.Diagnostics.AddError("Release missing image references", err.Error())
+			return
+		}
 		resp.State.RemoveResource(ctx)
 		return
 	}
@@ -121,17 +149,28 @@ func (*ImageResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		resp.Diagnostics.AddError("Read image artifact", err.Error())
 		return
 	}
-	if resolved != m.StorePath.ValueString() {
-		resp.Diagnostics.AddError("Image reference changed", "The image GC root no longer refers to the recorded store path.")
+	base, err := filepath.EvalSymlinks(filepath.Join(filepath.Dir(m.ArtifactPath.ValueString()), "base-image"))
+	if errors.Is(err, os.ErrNotExist) {
+		if err := releaseImage(m); err != nil {
+			resp.Diagnostics.AddError("Release missing image references", err.Error())
+			return
+		}
+		resp.State.RemoveResource(ctx)
 		return
 	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		resp.Diagnostics.AddError("Read image artifact", err.Error())
+	if err != nil || base != m.StorePath.ValueString() {
+		resp.Diagnostics.AddError("Image reference changed", "The base-image GC root no longer refers to the recorded clean image.")
 		return
 	}
-	if !info.Mode().IsRegular() {
-		resp.Diagnostics.AddError("Invalid image artifact", "Expected a regular image file.")
+	if m.ProvisioningRevision.ValueString() == "" {
+		resolved, err := filepath.EvalSymlinks(m.ArtifactPath.ValueString())
+		if err != nil || resolved != m.StorePath.ValueString() || info.Mode()&os.ModeSymlink == 0 {
+			resp.Diagnostics.AddError("Invalid image artifact", "Expected a symlink to the clean image.")
+		}
+	} else if !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+		resp.Diagnostics.AddError("Invalid private image artifact", "Expected a private regular image file with mode 0600.")
+	} else if checksum, err := guix.Checksum(ctx, m.ArtifactPath.ValueString()); err != nil || checksum != m.SHA256.ValueString() {
+		resp.Diagnostics.AddError("Private image changed", "The provisioned image no longer matches its recorded checksum.")
 	}
 }
 func (*ImageResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -155,6 +194,8 @@ func (*ImageResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 	}
 	s, known, diagnostics := blueprintSource(ctx, plan.Blueprint, plan.System, "image")
 	resp.Diagnostics.Append(diagnostics...)
+	files, secretsKnown, secretDiagnostics := blueprintSecretFiles(ctx, plan.Blueprint)
+	resp.Diagnostics.Append(secretDiagnostics...)
 	if resp.Diagnostics.HasError() || req.State.Raw.IsNull() {
 		return
 	}
@@ -164,14 +205,14 @@ func (*ImageResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 		return
 	}
 	previous, previousKnown, previousDiagnostics := blueprintSource(ctx, old.Blueprint, old.System, "image")
-	if !known || !previousKnown || previousDiagnostics.HasError() || s.Digest() != previous.Digest() {
+	if !known || !previousKnown || !secretsKnown || previousDiagnostics.HasError() || s.Digest() != previous.Digest() || files.Revision() != old.ProvisioningRevision.ValueString() {
 		resp.RequiresReplace.Append(path.Root("blueprint"))
 		return
 	}
 	if !plan.Name.Equal(old.Name) || !plan.ImageType.Equal(old.ImageType) || !plan.Target.Equal(old.Target) {
 		return
 	}
-	for name, value := range map[string]types.String{"artifact_path": old.ArtifactPath, "store_path": old.StorePath, "sha256": old.SHA256, "input_digest": old.InputDigest} {
+	for name, value := range map[string]types.String{"artifact_path": old.ArtifactPath, "store_path": old.StorePath, "sha256": old.SHA256, "input_digest": old.InputDigest, "provisioning_revision": old.ProvisioningRevision} {
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(name), value)...)
 	}
 }
@@ -181,27 +222,40 @@ func (*ImageResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if err := releaseImage(m); err != nil {
+		resp.Diagnostics.AddError("Release image files", err.Error())
+	}
+}
+
+func releaseImage(m ImageModel) error {
 	root := m.ArtifactPath.ValueString()
-	if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(m.ID.ValueString()) || filepath.Base(root) != "image" || filepath.Base(filepath.Dir(root)) != m.ID.ValueString() {
-		resp.Diagnostics.AddError("Invalid image ownership", fmt.Sprintf("Refusing to release unrecognized image reference %q.", root))
-		return
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root || !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(m.ID.ValueString()) || filepath.Base(root) != "image" || filepath.Base(filepath.Dir(root)) != m.ID.ValueString() {
+		return fmt.Errorf("refusing to release unrecognized image reference %q", root)
 	}
-	info, err := os.Lstat(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return
+	base := filepath.Join(filepath.Dir(root), "base-image")
+	for _, file := range []string{base, root} {
+		info, err := os.Lstat(file)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if file == base {
+			link, err := os.Readlink(file)
+			if err != nil || link != m.StorePath.ValueString() {
+				return fmt.Errorf("unrecognized base-image GC root")
+			}
+		} else if info.Mode()&os.ModeSymlink == 0 && (!info.Mode().IsRegular() || m.ProvisioningRevision.ValueString() == "") {
+			return fmt.Errorf("expected an owned image file or symlink")
+		}
 	}
-	if err != nil {
-		resp.Diagnostics.AddError("Release image reference", err.Error())
-		return
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		resp.Diagnostics.AddError("Invalid image reference", "Expected a GC root symlink.")
-		return
-	}
-	if err := os.Remove(root); err != nil {
-		resp.Diagnostics.AddError("Release image reference", err.Error())
-		return
+	for _, file := range []string{root, base} {
+		if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	// Remove only the now-empty owned directory; never recursively remove artifacts.
 	_ = os.Remove(filepath.Dir(root))
+	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"slices"
 	"syscall"
 	"time"
 )
@@ -33,14 +34,30 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 
 func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	done := make(chan struct{})
 	cmd.Dir = dir
 	// Guix starts builders and inferior Guile processes. Cancel the whole group.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = 2 * time.Second
+	cmd.Cancel = func() error {
+		if name == "env" && slices.Contains(args, "secrets") {
+			// Let the extension unwind mounts before escalating cancellation.
+			err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+			go func() {
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				}
+			}()
+			return err
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 7 * time.Second
 	var out, stderr limitedBuffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	err := cmd.Run()
+	close(done)
 	if ctx.Err() != nil {
 		err = ctx.Err()
 	}

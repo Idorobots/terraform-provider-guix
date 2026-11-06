@@ -4,6 +4,8 @@ package provider
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"testing"
 
@@ -40,7 +42,7 @@ resource "guix_host" "server" {
 `, client.ArtifactDirectory, content, attachment)
 	}
 	var identity string
-	check := func(content string) testresource.TestCheckFunc {
+	check := func(content string, builds, provisions int) testresource.TestCheckFunc {
 		return func(state *terraform.State) error {
 			secrets := state.RootModule().Resources["guix_secrets.server"].Primary.Attributes
 			image := state.RootModule().Resources["guix_image.server"].Primary.Attributes
@@ -57,18 +59,29 @@ resource "guix_host" "server" {
 			}
 			backend.mu.Lock()
 			defer backend.mu.Unlock()
-			if backend.builds != 1 || backend.deployments != 1 {
-				return fmt.Errorf("descriptor change rebuilt/redeployed: %d builds, %d deployments", backend.builds, backend.deployments)
+			if backend.builds != builds || backend.systemBuilds != 1 || backend.deployments != 1 || backend.imageProvisions != provisions || backend.hostProvisions != provisions {
+				return fmt.Errorf("builds=%d deployments=%d image provisions=%d host provisions=%d", backend.builds, backend.deployments, backend.imageProvisions, backend.hostProvisions)
+			}
+			if backend.installedFiles["/etc/example/key"].Content != content {
+				return fmt.Errorf("host secret was not updated")
+			}
+			info, err := os.Lstat(image["artifact_path"])
+			if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+				return fmt.Errorf("private image permissions: %v", err)
+			}
+			base, err := filepath.EvalSymlinks(filepath.Join(filepath.Dir(image["artifact_path"]), "base-image"))
+			if err != nil || base != image["store_path"] {
+				return fmt.Errorf("clean image GC root missing: %v", err)
 			}
 			return nil
 		}
 	}
 	testresource.Test(t, testresource.TestCase{ProtoV6ProviderFactories: factories(client), Steps: []testresource.TestStep{
 		{Config: config("private-v1", "")},
-		{Config: config("private-v1", "secrets = guix_secrets.server"), Check: check("private-v1")},
+		{Config: config("private-v1", "secrets = guix_secrets.server"), Check: check("private-v1", 2, 1)},
 		{Config: config("private-v2", "secrets = guix_secrets.server"), ConfigPlanChecks: testresource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
-			plancheck.ExpectResourceAction("guix_image.server", plancheck.ResourceActionUpdate),
-		}}, Check: check("private-v2")},
+			plancheck.ExpectResourceAction("guix_image.server", plancheck.ResourceActionDestroyBeforeCreate),
+		}}, Check: check("private-v2", 3, 2)},
 		{Config: config("private-v2", "secrets = guix_secrets.server"), PlanOnly: true, ExpectNonEmptyPlan: false},
 		{Config: config("private-v2", ""), Check: func(state *terraform.State) error {
 			if state.RootModule().Resources["guix_image.server"].Primary.Attributes["blueprint.secrets.id"] != "" {

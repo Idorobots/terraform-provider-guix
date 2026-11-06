@@ -7,9 +7,9 @@ This project is vibe-coded. I strongly advise against using it for anything seri
 | Resource | Purpose |
 | --- | --- |
 | [`guix_blueprint`](docs/resources/blueprint.md) | OS, image and machine specifications, pinned channels, sources and secret descriptors |
-| [`guix_image`](docs/resources/image.md) | Build an immutable bootable image |
+| [`guix_image`](docs/resources/image.md) | Build and provision a bootable image |
 | [`guix_host`](docs/resources/host.md) | Discover a running installation, expose its IPv4 address, and reconcile its configuration |
-| [`guix_secrets`](docs/resources/secrets.md) | Describe sensitive files and attach their dependencies to a blueprint; installation is deferred |
+| [`guix_secrets`](docs/resources/secrets.md) | Declare private files installed by image and host consumers |
 
 ## Requirements
 
@@ -23,6 +23,12 @@ This project is vibe-coded. I strongly advise against using it for anything seri
   management public key authorized. Pin its SSH **host** public key separately.
 - The deployment user is root or has passwordless sudo. Management private keys
   must be unencrypted, supplied as `ssh.private_key` or `ssh.identity_file`.
+- Image provisioning uses FUSE (`/dev/fuse` and a working `fusermount3` or
+  `fusermount`). If unavailable, `pkexec` and a Polkit authentication agent
+  provide the administrator-password prompt. Only the image helper runs elevated.
+- Running hosts provide Guile at `/run/current-system/profile/bin/guile`, as in
+  the default Guix System profile. See the [bundled channel](channel/README.md)
+  for supported image layouts and standalone commands.
 
 ## Workflow
 
@@ -31,12 +37,13 @@ This project is vibe-coded. I strongly advise against using it for anything seri
 2. Pass `blueprint = guix_blueprint.<name>` independently to images and hosts.
    For bootstrap, add `depends_on = [guix_image.<name>]` to the host when image
    creation should finish before the host starts waiting. Run `tofu apply`.
-3. While the apply is waiting, find the image GC root under
+3. While the apply is waiting, find the flashable image under
    `.guix-artifacts/<name>/<image-id>/image` (or the configured `artifact_directory`).
    Inspect `ls -l .guix-artifacts/controller/*/image` in another terminal, manually flash the
    appropriate image to the intended disk, and boot the host.
 4. The provider discovers `<hostname>.local`, verifies the pinned SSH host key,
-   builds the desired system, and deploys if the installed system differs.
+   builds the desired system, provisions attached private files, and deploys if
+   the installed system differs.
 5. A dependent image can consume `guix_host.controller.ipv4_address`. OpenTofu
    delays that image build until the controller is ready, all within one apply.
 
@@ -61,22 +68,27 @@ architectures.
 - **Blueprints are mutable descriptors.** They have stable identities, and do not
   evaluate Scheme or perform builds or deployments. All three specifications may
   be absent; each consumer validates its own requirements.
-- **Images are immutable.** Selected source, channels, supporting files, image type, or
-  target-system changes replace the image resource. Image bytes live in the Guix
-  store; OpenTofu state contains paths, the checksum and source digest.
-- Each image resource owns a distinct GC-root symlink, even when Guix deduplicates
-  identical images. Destroy removes only that reference. A missing artifact/root
-  is detected during refresh and rebuilt on the next apply. Keep the artifact
-  directory on persistent storage accessible to the runner. GC roots do not copy
-  images to other runners or artifact stores.
+- **Images are immutable resources.** Selected source, channels, supporting files,
+  image type, architecture, secret contents or modes replace the image resource.
+  The clean base remains in the Guix store; provisioned copies live outside it
+  with mode 0600. Secret-only changes reuse the cached base derivation.
+- Each image owns a `base-image` GC-root symlink. Its adjacent `image` is the
+  flashable private copy, or a symlink to the base when no secrets are attached.
+  Destroy deletes the owned copy/symlink and releases the base root. Missing
+  artifacts or roots are rebuilt on the next apply. Keep the artifact directory
+  on persistent storage accessible to the runner. GC roots do not copy images
+  to other runners or artifact stores.
 - **An offline host is absent.** After the read timeout (default 30 seconds), an
   unreachable host is removed from state. The next apply waits for it again and
   reconciles it. Authentication errors, host-key mismatches, malformed responses,
   cancellation, and discovery-tool failures return errors and preserve state.
 - Changes to the host's selected blueprint specification, channels, supporting
   files, architecture or SSH configuration reconcile it in place with `guix deploy`.
-- Unused blueprint specifications, blueprint identity, and descriptor-only secret
-  changes update leaf state without rebuilding images or reconciling hosts.
+- Secret-only host updates install files without building or reconfiguring the
+  system. Installation also runs on create when the installed system already
+  matches. Failed provisioning prevents subsequent Guix deployment.
+- Unused blueprint specifications and descriptor identities update leaf state
+  without rebuilding images or reconciling hosts.
   Shared source files remain tracked by both consumers, even if a particular
   expression does not load every file.
 - Refresh records both the observed system and the last successful deployment.
@@ -96,15 +108,14 @@ Authorization changes take effect when the consuming Guix configurations are
 deployed.
 
 `ssh.host_key` is the server's own OpenSSH public key. Obtain it through a trusted
-commissioning channel, or provision the corresponding host identity separately.
+commissioning channel, or provision its private half through `guix_secrets`.
 It is verified by both inspection and Guix deployment. Management keys do not
-substitute for server identity. Host private-key provisioning is an operator
-commissioning step; this provider does not place host private keys in Guix store
-objects. `tls_private_key` and `ssh.private_key` values are stored in OpenTofu
+substitute for server identity. Private host keys are installed outside the Guix
+store. `tls_private_key` and `ssh.private_key` values are stored in OpenTofu
 state; use a suitably protected state backend. Temporary deployment identity files
 are mode 0600 and removed after the operation.
 
-### Source bundles
+### Private file provisioning
 
 `guix_secrets` accepts a map of absolute file destinations to objects containing
 sensitive `content` and an optional `mode` (default `0600`). Attach the whole
@@ -112,11 +123,24 @@ resource with `secrets = guix_secrets.<name>` on a blueprint. These descriptors 
 stored in Terraform state and never merged into `source_files` or passed to Guix
 build commands. The resource has no SOPS or age dependency.
 
-**This version records attachments only:** it does not personalize images or
-install files on running hosts. Attachment changes update state without rebuilding
-the immutable image. Destroy forgets descriptors; it does not remove remote files.
-Keep any external ciphertext preparation in a separate module and pass its
-encrypted output explicitly through `source_files`.
+The provider ships its own [Guix channel](channel/README.md). It invokes
+`guix secrets image` after the base image is built and `guix secrets deploy`
+before any required host deployment. These commands only install files: no
+activation hooks, service restarts, system reconfiguration or boot-time processing.
+Payloads use separate mode-0700 workspaces and mode-0600 files. They are never
+embedded in Scheme build expressions, command arguments or public source bundles.
+
+Files are root-owned with declared modes; new private parent directories use
+0700. Existing directories retain their metadata, and destination symlinks are
+rejected. Running-host replacements are atomic per file. Removing an attachment
+or destroying a descriptor/host does not delete remote files. Files installed
+before a later deployment failure remain installed; retrying re-applies the
+desired files. Provisioning revisions are sensitive state, separate from public
+build digests. Refresh observes the host system, not individual remote secrets.
+Keep external ciphertext preparation in a separate module and pass its encrypted
+output explicitly through `source_files`.
+
+### Source bundles
 
 Blueprint `os`, `image`, and `machine` are independently optional Scheme source
 strings evaluating to their respective Guix record types. Supply raw source,

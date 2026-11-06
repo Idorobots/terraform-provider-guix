@@ -12,5 +12,6 @@ variable "private_key" {
   sensitive = true
 }
 
-# Pass secrets = guix_secrets.server to guix_blueprint. This currently records
-# the descriptor and dependency only; installation by leaves is not implemented.
+# Pass secrets = guix_secrets.server to guix_blueprint. Image consumers install
+# these files in a private copy after building; hosts install them before any
+# required Guix deployment. The files never enter the Guix store.

@@ -72,6 +72,10 @@ type fakeBackend struct {
 	deployments, builds, attempts, failAttempts int
 	resolveError, inspectError                  error
 	deploymentError                             error
+	imageProvisions, hostProvisions             int
+	provisionError                              error
+	installedFiles                              guix.SecretFiles
+	systemBuilds                                int
 }
 
 func (f *fakeBackend) Resolve(context.Context, string) (string, error) {
@@ -92,7 +96,10 @@ func (f *fakeBackend) Inspect(context.Context, guix.Destination) (string, error)
 	return f.observed, f.inspectError
 }
 func desired(s guix.Source) string { return "/gnu/store/" + s.Digest()[:32] + "-system" }
-func (*fakeBackend) BuildSystem(_ context.Context, s guix.Source) (string, error) {
+func (f *fakeBackend) BuildSystem(_ context.Context, s guix.Source) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.systemBuilds++
 	return desired(s), nil
 }
 func (f *fakeBackend) Deploy(_ context.Context, s guix.Source, _ guix.Destination) error {
@@ -125,6 +132,42 @@ func (f *fakeBackend) BuildImage(ctx context.Context, s guix.Source, imageType, 
 	}
 	checksum, err := guix.Checksum(ctx, image)
 	return image, checksum, err
+}
+
+func (f *fakeBackend) ProvisionImage(ctx context.Context, _ string, files guix.SecretFiles, input, output string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.imageProvisions++
+	if f.provisionError != nil {
+		return "", f.provisionError
+	}
+	body, err := os.ReadFile(input)
+	if err != nil {
+		return "", err
+	}
+	body = append(body, []byte(files.Revision())...)
+	if err := os.WriteFile(output, body, 0600); err != nil {
+		return "", err
+	}
+	return guix.Checksum(ctx, output)
+}
+
+func (f *fakeBackend) ProvisionHost(_ context.Context, _ string, files guix.SecretFiles, _ guix.Destination) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(files) != 0 {
+		f.hostProvisions++
+	}
+	if f.provisionError != nil {
+		return f.provisionError
+	}
+	if f.installedFiles == nil {
+		f.installedFiles = guix.SecretFiles{}
+	}
+	for name, file := range files {
+		f.installedFiles[name] = file
+	}
+	return nil
 }
 
 func fakeClient(t *testing.T) (*Client, *fakeBackend) {

@@ -47,7 +47,7 @@ func (p *GuixProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp 
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Build Guix System images and reconcile manually commissioned hosts through mDNS and SSH. Requires a Linux runner, Guix, and Avahi.",
 		Attributes: map[string]schema.Attribute{
-			"artifact_directory": schema.StringAttribute{Optional: true, MarkdownDescription: "Persistent local directory for per-resource image GC roots. Defaults to .guix-artifacts under the OpenTofu working directory."},
+			"artifact_directory": schema.StringAttribute{Optional: true, MarkdownDescription: "Persistent local directory for private image artifacts and per-resource clean-image GC roots. Defaults to .guix-artifacts under the OpenTofu working directory."},
 			"ssh": schema.SingleNestedAttribute{Optional: true, MarkdownDescription: "Default SSH credentials, also used for hostname imports. Host resources may override the entire object.", Attributes: map[string]schema.Attribute{
 				"user":          schema.StringAttribute{Optional: true, MarkdownDescription: "SSH user. Defaults to root; other users require passwordless sudo for Guix deployment."},
 				"port":          schema.Int64Attribute{Optional: true, MarkdownDescription: "SSH port. Defaults to 22."},

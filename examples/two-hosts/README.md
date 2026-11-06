@@ -6,11 +6,9 @@
 2. Generate and commit a channel lock:
    `guix describe -f channels > channels-lock.scm`. Ensure each channel has a
    fixed `commit`, rather than only a branch.
-3. Obtain each server's SSH host public key through trusted commissioning, or
-   provision a known host identity separately. Set `host_public_keys` in a
-   variable file. For a first installation using automatically generated host
-   keys, you can build the images first, boot, obtain the host keys via the local
-   console, and then apply the complete configuration.
+3. Prepare FUSE mounting on the runner, or `pkexec` and a Polkit authentication
+   agent. The provider provisions the generated server identities into private
+   image copies before they are flashed.
 4. Initialize providers with `tofu init` and run `tofu apply`. For an unpublished local
    build, follow the development-override instructions in the repository README.
 5. In another terminal, inspect `.guix-artifacts/controller/*/image`. When the controller
@@ -22,6 +20,10 @@
 
 `tls_private_key.management` generates a management identity. Only its public key
 is included in the images; the private key is used for SSH and deployment.
+`tls_private_key.host` generates independent server identities. Their private
+halves are attached through `guix_secrets.host` and installed outside the Guix
+store; the provider pins their matching public halves. These keys persist in
+OpenTofu state, which must be retained with the deployment.
 The worker's `/etc/controller-address` contains the discovered controller IPv4
 address. A controller address change refreshes the dependency and plans a new
 worker image plus in-place worker deployment. It does not reflash the worker.

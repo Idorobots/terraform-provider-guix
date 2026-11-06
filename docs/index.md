@@ -22,7 +22,7 @@ provider "guix" {
 
 ### Optional
 
-- `artifact_directory` (String) Persistent local directory for per-resource image GC roots. Defaults to .guix-artifacts under the OpenTofu working directory.
+- `artifact_directory` (String) Persistent local directory for private image artifacts and per-resource clean-image GC roots. Defaults to .guix-artifacts under the OpenTofu working directory.
 - `ssh` (Attributes) Default SSH credentials, also used for hostname imports. Host resources may override the entire object. (see [below for nested schema](#nestedatt--ssh))
 
 <a id="nestedatt--ssh"></a>

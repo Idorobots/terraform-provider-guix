@@ -32,7 +32,7 @@ func TestHostCommissioningPlanWarning(t *testing.T) {
 			state := hostState(t, r)
 			plan := tfsdk.Plan(state)
 			if tc.pending {
-				if diagnostics := plan.SetAttribute(t.Context(), path.Root("blueprint"), types.ObjectUnknown(blueprintSchema().GetType().(types.ObjectType).AttrTypes)); diagnostics.HasError() {
+				if diagnostics := plan.SetAttribute(t.Context(), path.Root("blueprint"), types.ObjectUnknown(objectAttributeTypes(t, blueprintSchema().GetType()))); diagnostics.HasError() {
 					t.Fatal(diagnostics)
 				}
 			}

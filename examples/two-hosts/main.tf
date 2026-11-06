@@ -11,20 +11,26 @@ terraform {
   }
 }
 
-variable "host_public_keys" {
-  description = "Pinned SSH server public keys, obtained or provisioned through a trusted commissioning channel. These are separate from the management key."
-  type = object({
-    controller = string
-    worker     = string
-  })
-}
-
 provider "guix" {
   artifact_directory = "${path.root}/.guix-artifacts"
 }
 
 resource "tls_private_key" "management" {
   algorithm = "ED25519"
+}
+
+resource "tls_private_key" "host" {
+  for_each  = toset(["controller", "worker"])
+  algorithm = "ED25519"
+}
+
+resource "guix_secrets" "host" {
+  for_each = tls_private_key.host
+  files = {
+    "/etc/ssh/ssh_host_ed25519_key" = {
+      content = each.value.private_key_openssh
+    }
+  }
 }
 
 locals {
@@ -46,6 +52,7 @@ resource "guix_blueprint" "controller" {
   os           = local.controller_configuration
   channels     = local.channels
   source_files = local.sources
+  secrets      = guix_secrets.host["controller"]
 }
 
 resource "guix_image" "controller" {
@@ -58,7 +65,7 @@ resource "guix_host" "controller" {
   blueprint  = guix_blueprint.controller
   depends_on = [guix_image.controller]
   ssh = {
-    host_key    = var.host_public_keys.controller
+    host_key    = tls_private_key.host["controller"].public_key_openssh
     private_key = tls_private_key.management.private_key_openssh
   }
 }
@@ -67,6 +74,7 @@ resource "guix_blueprint" "worker" {
   os           = local.worker_configuration
   channels     = local.channels
   source_files = local.sources
+  secrets      = guix_secrets.host["worker"]
 }
 
 resource "guix_image" "worker" {
@@ -79,7 +87,7 @@ resource "guix_host" "worker" {
   blueprint  = guix_blueprint.worker
   depends_on = [guix_image.worker]
   ssh = {
-    host_key    = var.host_public_keys.worker
+    host_key    = tls_private_key.host["worker"].public_key_openssh
     private_key = tls_private_key.management.private_key_openssh
   }
 }

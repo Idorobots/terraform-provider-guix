@@ -3,12 +3,12 @@
 page_title: "guix_image Resource - guix"
 subcategory: ""
 description: |-
-  Build an immutable Guix System image with pinned channels. Flash and boot it manually; the provider retains it using a per-resource GC root. Destroy releases only that reference.
+  Build a Guix System image with pinned channels, then provision attached private files outside the store using guix secrets image. FUSE mounts are preferred; Polkit authentication is requested when FUSE is unavailable. Flash and boot the final artifact manually. Destroy deletes the owned private copy and releases its clean-image GC root.
 ---
 
 # guix_image (Resource)
 
-Build an immutable Guix System image with pinned channels. Flash and boot it manually; the provider retains it using a per-resource GC root. Destroy releases only that reference.
+Build a Guix System image with pinned channels, then provision attached private files outside the store using guix secrets image. FUSE mounts are preferred; Polkit authentication is requested when FUSE is unavailable. Flash and boot the final artifact manually. Destroy deletes the owned private copy and releases its clean-image GC root.
 
 ## Example Usage
 
@@ -67,11 +67,12 @@ resource "guix_image" "from_image_specification" {
 
 ### Read-Only
 
-- `artifact_path` (String) Persistent image symlink and Guix GC root. Available under artifact_directory/<name>/<id>/image during manual commissioning.
+- `artifact_path` (String) Flashable image under artifact_directory/<name>/<id>/image. A private mode-0600 copy when secrets are attached; otherwise a symlink to the clean image.
 - `id` (String) Unique resource identity, owning an independent image GC root.
 - `input_digest` (String) Digest of the configuration, channels, system, cross target and source files.
+- `provisioning_revision` (String, Sensitive) Private digest of installed file contents, modes and the bundled provisioner implementation.
 - `sha256` (String) SHA256 checksum of the image bytes.
-- `store_path` (String) Immutable Guix store image path.
+- `store_path` (String) Clean immutable Guix store image path, retained by the adjacent base-image GC root. Contains no provisioned secrets.
 
 <a id="nestedatt--blueprint"></a>
 ### Nested Schema for `blueprint`
@@ -86,7 +87,7 @@ Optional:
 - `image` (String) Scheme source evaluating to a Guix image record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
 - `machine` (String) Scheme source evaluating to a Guix machine record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
 - `os` (String) Scheme source evaluating to a Guix operating-system record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
-- `secrets` (Attributes) Secret file descriptor, normally guix_secrets.<name>. Records dependencies and sensitive file contents only. Consuming leaves do not yet install these files. (see [below for nested schema](#nestedatt--blueprint--secrets))
+- `secrets` (Attributes) Private files, normally guix_secrets.<name>. Images install these after building; hosts install them before any required Guix deployment. (see [below for nested schema](#nestedatt--blueprint--secrets))
 - `source_files` (Map of String) Public supporting files keyed by normalized relative path, including Scheme modules, local assets and encrypted documents. Provider filenames are reserved.
 
 <a id="nestedatt--blueprint--secrets"></a>
@@ -94,7 +95,7 @@ Optional:
 
 Required:
 
-- `files` (Attributes Map) Files keyed by absolute destination path. Contents are sensitive and remain outside the Guix source bundle. Files are currently descriptors only; no installation is performed. Future installation defaults to root ownership. (see [below for nested schema](#nestedatt--blueprint--secrets--files))
+- `files` (Attributes Map) Files keyed by absolute destination path. Consuming images and hosts install these files outside /gnu/store with root ownership. Contents are sensitive and remain outside the Guix source bundle. (see [below for nested schema](#nestedatt--blueprint--secrets--files))
 - `id` (String) Secret descriptor resource identity.
 
 <a id="nestedatt--blueprint--secrets--files"></a>
@@ -106,4 +107,4 @@ Required:
 
 Optional:
 
-- `mode` (String) Unix file mode for future installation; defaults to 0600.
+- `mode` (String) Installed Unix file mode; defaults to 0600.
