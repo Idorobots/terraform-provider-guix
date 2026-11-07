@@ -63,8 +63,8 @@ func (w *subprocessLog) Write(p []byte) (int, error) {
 
 func (w *subprocessLog) flush() {
 	if w.pending.Len() > 0 {
-		tflog.Info(w.ctx, "Subprocess output", map[string]any{
-			"command": w.command, "stream": w.stream, "output": w.pending.String(),
+		tflog.Info(w.ctx, w.pending.String(), map[string]any{
+			"command": w.command, "stream": w.stream,
 		})
 		w.pending.Reset()
 	}

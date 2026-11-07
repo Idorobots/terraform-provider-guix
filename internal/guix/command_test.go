@@ -73,7 +73,7 @@ func TestSubprocessStreamsInfoBeforeExit(t *testing.T) {
 	}
 	want := map[string]string{"building": "stdout", "next": "stdout", "result": "stdout", "warning": "stderr", "last": "stderr"}
 	for _, entry := range entries {
-		line, _ := entry["output"].(string)
+		line, _ := entry["@message"].(string)
 		if entry["@level"] != "info" || entry["command"] != "sh" || entry["stream"] != want[line] {
 			t.Fatalf("unexpected subprocess log: %v", entry)
 		}
@@ -100,7 +100,7 @@ func TestSubprocessLogsBeyondCaptureLimit(t *testing.T) {
 	}
 	var output strings.Builder
 	for _, entry := range entries {
-		line := entry["output"].(string)
+		line := entry["@message"].(string)
 		if len(line) > 64*1024 || entry["@level"] != "info" {
 			t.Fatal("unbounded or non-INFO subprocess log")
 		}
