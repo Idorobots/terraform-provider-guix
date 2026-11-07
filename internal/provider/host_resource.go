@@ -262,7 +262,7 @@ func (r *HostResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
 }
-func (*HostResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+func (r *HostResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	if req.Plan.Raw.IsNull() {
 		return
 	}
@@ -279,9 +279,25 @@ func (*HostResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequ
 	if req.State.Raw.IsNull() {
 		target := "the configured .local hostname"
 		if !model.Hostname.IsNull() && !model.Hostname.IsUnknown() {
-			target = fmt.Sprintf("%q", model.Hostname.ValueString())
+			hostname := model.Hostname.ValueString()
+			target = fmt.Sprintf("%q", hostname)
+			if discovery.ValidHostname(hostname) && r.client != nil && r.client.Resolver != nil {
+				attempt, cancel := context.WithTimeout(ctx, 5*time.Second)
+				address, err := r.client.Resolver.Resolve(attempt, hostname)
+				cancel()
+				if err == nil && address != "" {
+					return
+				}
+				if err != nil && !errors.Is(err, discovery.ErrUnavailable) && ctx.Err() == nil {
+					resp.Diagnostics.AddWarning("Host discovery unavailable", "Could not check whether "+target+" is already discoverable: "+err.Error()+". Host discovery will be retried during apply.")
+					return
+				}
+				if ctx.Err() != nil {
+					return
+				}
+			}
 		}
-		resp.Diagnostics.AddWarning("Manual commissioning required", "Boot a Guix System installation. Ensure "+target+" is discoverable over mDNS and accepts SSH with the configured management key and pinned host key. Apply waits for this host until the create timeout, then reconciles its blueprint. Image builds are independent; add an explicit depends_on if bootstrap ordering is required.")
+		resp.Diagnostics.AddWarning("Manual commissioning required", "If the host is not already running, boot a Guix System installation. Ensure "+target+" is discoverable over mDNS and accepts SSH with the configured management key and pinned host key. Apply waits for this host until the create timeout, then reconciles its blueprint. Image builds are independent; add an explicit depends_on if bootstrap ordering is required.")
 		return
 	}
 	var old HostModel

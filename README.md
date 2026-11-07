@@ -50,8 +50,10 @@ This project is vibe-coded. I strongly advise against using it for anything seri
 The complete [two-host example](examples/two-hosts) combines `tls_private_key`,
 Guix SSH authorization, image builds, and an IP-dependent worker configuration.
 
-Plans for new hosts print a `Manual commissioning required` warning describing
-the required mDNS and SSH access. No logging environment variable is required.
+Plans for new hosts check mDNS discovery and print a `Manual commissioning required`
+warning when the host is not discoverable or its hostname is unknown.
+An already discoverable host skips that warning; SSH access and the pinned host
+key are verified during apply. Discovery failures are reported separately.
 Existing-host updates and destroy plans do not emit this create-time warning.
 During apply, the provider also logs host commissioning instructions at INFO
 level (`TF_LOG_PROVIDER=INFO`). Image paths are available on the image resource
