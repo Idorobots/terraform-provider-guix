@@ -40,7 +40,21 @@ func (SSH) Inspect(ctx context.Context, d guix.Destination) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse SSH private key: %w", err)
 	}
-	config := &ssh.ClientConfig{User: d.User, Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)}, HostKeyCallback: ssh.FixedHostKey(key)}
+	// Negotiate the pinned key's type rather than another identity offered by
+	// the server. RSA key formats use separate SHA-2 signature algorithm names.
+	hostKeyAlgorithms := []string{key.Type()}
+	switch key.Type() {
+	case ssh.KeyAlgoRSA:
+		hostKeyAlgorithms = []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
+	case ssh.CertAlgoRSAv01:
+		hostKeyAlgorithms = []string{ssh.CertAlgoRSASHA512v01, ssh.CertAlgoRSASHA256v01}
+	}
+	config := &ssh.ClientConfig{
+		User:              d.User,
+		Auth:              []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback:   ssh.FixedHostKey(key),
+		HostKeyAlgorithms: hostKeyAlgorithms,
+	}
 	address := net.JoinHostPort(d.Address, strconv.Itoa(d.Port))
 	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", address)
 	if err != nil {

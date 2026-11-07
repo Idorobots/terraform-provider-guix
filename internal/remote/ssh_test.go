@@ -4,8 +4,11 @@ package remote
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -21,9 +24,20 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func identity(t *testing.T) (ssh.Signer, string) {
+func identity(t *testing.T, algorithm string) (ssh.Signer, string) {
 	t.Helper()
-	_, key, err := ed25519.GenerateKey(rand.Reader)
+	var key any
+	var err error
+	switch algorithm {
+	case ssh.KeyAlgoED25519:
+		_, key, err = ed25519.GenerateKey(rand.Reader)
+	case ssh.KeyAlgoECDSA256:
+		key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	case ssh.KeyAlgoRSA:
+		key, err = rsa.GenerateKey(rand.Reader, 2048)
+	default:
+		t.Fatalf("unsupported test key algorithm %q", algorithm)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,19 +55,29 @@ func identity(t *testing.T) (ssh.Signer, string) {
 func TestSSHIdentityAndInspection(t *testing.T) {
 	for _, tc := range []struct {
 		name                       string
+		hostAlgorithm              string
+		multipleHostKeys           bool
 		wrongHost, wrongManagement bool
 		output                     string
 		wantError                  bool
 	}{
-		{"success", false, false, "/gnu/store/00000000000000000000000000000000-system\n", false},
-		{"host mismatch", true, false, "", true},
-		{"authentication failure", false, true, "", true},
-		{"malformed system", false, false, "not a Guix store path", true},
+		{name: "success", output: "/gnu/store/00000000000000000000000000000000-system\n"},
+		{name: "Ed25519 pin with multiple host keys", multipleHostKeys: true, output: "/gnu/store/00000000000000000000000000000000-system\n"},
+		{name: "ECDSA pin with multiple host keys", hostAlgorithm: ssh.KeyAlgoECDSA256, multipleHostKeys: true, output: "/gnu/store/00000000000000000000000000000000-system\n"},
+		{name: "RSA pin with multiple host keys", hostAlgorithm: ssh.KeyAlgoRSA, multipleHostKeys: true, output: "/gnu/store/00000000000000000000000000000000-system\n"},
+		{name: "host mismatch", wrongHost: true, wantError: true},
+		{name: "host mismatch with multiple host keys", multipleHostKeys: true, wrongHost: true, wantError: true},
+		{name: "authentication failure", wrongManagement: true, wantError: true},
+		{name: "malformed system", output: "not a Guix store path", wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			host, _ := identity(t)
-			management, private := identity(t)
-			other, otherPrivate := identity(t)
+			algorithm := tc.hostAlgorithm
+			if algorithm == "" {
+				algorithm = ssh.KeyAlgoED25519
+			}
+			host, _ := identity(t, algorithm)
+			management, private := identity(t, ssh.KeyAlgoED25519)
+			other, otherPrivate := identity(t, ssh.KeyAlgoED25519)
 			config := &ssh.ServerConfig{PublicKeyCallback: func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 				if !bytes.Equal(key.Marshal(), management.PublicKey().Marshal()) {
 					return nil, fmt.Errorf("unauthorized management key")
@@ -61,6 +85,14 @@ func TestSSHIdentityAndInspection(t *testing.T) {
 				return nil, nil
 			}}
 			config.AddHostKey(host)
+			if tc.multipleHostKeys {
+				for _, extraAlgorithm := range []string{ssh.KeyAlgoECDSA256, ssh.KeyAlgoED25519, ssh.KeyAlgoRSA} {
+					if extraAlgorithm != algorithm {
+						extra, _ := identity(t, extraAlgorithm)
+						config.AddHostKey(extra)
+					}
+				}
+			}
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
