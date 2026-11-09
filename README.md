@@ -70,8 +70,10 @@ architectures.
 - **Blueprints are mutable descriptors.** They have stable identities, and do not
   evaluate Scheme or perform builds or deployments. All three specifications may
   be absent; each consumer validates its own requirements.
-- **Images are immutable resources.** Selected source, channels, supporting files,
-  image type, architecture or secrets declaration changes replace the image resource.
+- **Image changes rebuild in place.** Selected source, channels, supporting files,
+  image type, architecture, label or secrets declaration changes build a new
+  artifact generation while retaining the resource identity. The previous artifact
+  and its GC root are retained until the new generation succeeds, then released.
   The clean base remains in the Guix store; provisioned copies live outside it
   with mode 0600. Secret-only changes reuse the cached base derivation.
 - Each image owns a `base-image` GC-root symlink. Its adjacent `image` is the
@@ -80,6 +82,9 @@ architectures.
   artifacts or roots are rebuilt on the next apply. Keep the artifact directory
   on persistent storage accessible to the runner. GC roots do not copy images
   to other runners or artifact stores.
+- Image refresh checks artifact existence, file type/permissions and GC-root
+  references without reading or hashing image contents. The `sha256` attribute
+  records the checksum from the last successful build/provisioning operation.
 - **An offline host is absent.** After the read timeout (default 30 seconds), an
   unreachable host is removed from state. The next apply waits for it again and
   reconciles it. Authentication errors, host-key mismatches, malformed responses,
@@ -98,6 +103,34 @@ architectures.
 - Destroying a host only forgets it. It does not shut down, wipe, or uninstall it.
 - An interrupted create can be retried: it inspects the existing installation and
   deploys only when needed. Failed updates retain the prior successful state.
+
+### Image operation deadlines
+
+Configure image deadlines independently:
+
+```hcl
+resource "guix_image" "server" {
+  blueprint = guix_blueprint.server
+  timeouts = {
+    create = "4h"
+    update = "4h"
+    read   = "30s"
+  }
+}
+```
+
+`create` covers the initial build and private-file provisioning (default `2h`).
+`update` covers rebuilding/reprovisioning on input changes (default `2h`).
+`read` bounds the lightweight artifact check (default `30s`). Durations must be
+positive; omitted fields use their defaults. Timeout-only edits do not rebuild.
+Rebuilds use `.guix-artifacts/<name>/<id>/<generation>/image`; always use the
+current `artifact_path` output when flashing. Failed or timed-out rebuilds retain
+the previous artifact. Explicit Terraform replacements such as `-replace` and
+`replace_triggered_by` invoke a new create and therefore use `timeouts.create`.
+
+This replaces the former `build_timeout` argument. Update configurations to use
+`timeouts`; existing state is upgraded automatically, preserving its previous
+build deadline as both `create` and `update` without rebuilding the image.
 
 ### Management keys and host identity
 
@@ -149,7 +182,7 @@ is evaluated only during apply. Relative sources and load expressions use the
 Terraform working directory; use `abspath()` in module-local templates. Inline
 secrets remain in sensitive Terraform state. Provisioning has no SOPS/age dependency.
 Terraform-generated keys interpolated into Scheme are already tracked: changing
-the key changes the expression, replaces image consumers and reprovisions host
+the key changes the expression, rebuilds image consumers and reprovisions host
 consumers in place.
 
 Install the [Guix secrets channel](channel/README.md) and include it in the
@@ -228,7 +261,7 @@ resource "guix_blueprint" "server" {
 ```
 
 The comment changes the Terraform input while leaving Scheme's meaning intact.
-This replaces image consumers and triggers only file provisioning on hosts when
+This rebuilds image consumers and triggers only file provisioning on hosts when
 their public configuration is unchanged. It can be used instead of the image's
 `terraform_data` trigger when both consumers should react. Inline contents read
 with `file()` or `filebase64()` and interpolated into the declaration also cause
@@ -345,7 +378,7 @@ Adding files to `source_files` makes them importable through `-L`, but does not
 register them for image/platform discovery inside a pinned channel profile.
 
 Publish definition changes to the channel and update its pinned commit to use
-them. Changes to blueprint `channels` replace consuming images and reconcile
+them. Changes to blueprint `channels` rebuild consuming images and reconcile
 consuming hosts using those same channels.
 
 ### Cross-compiling images
@@ -354,7 +387,7 @@ Set `target = "aarch64-linux-gnu"` on `guix_image` to pass Guix's `--target`
 for the image build instead of `--system`. Guix builds the cross tools for the
 runner's native architecture. Set `system = "aarch64-linux"` independently on
 the host leaf for native host system builds and deployment. Changing `target`
-replaces the image.
+rebuilds the image under `timeouts.update`.
 
 The target applies only to image creation. Host reconciliation and `guix deploy`
 still build for `system` and require a native builder, offload, or emulation for
@@ -390,7 +423,7 @@ make generate
 Acceptance tests run the real OpenTofu CLI against deterministic, injected
 Guix/discovery/SSH backends; they need no hardware or Guix daemon. Tests cover
 delayed discovery, import, in-place deployment, rollback drift, IP-dependent
-image replacement, offline semantics, cancellation, and
+image rebuilds/replacement, operation deadlines, offline semantics, cancellation, and
 independent image ownership. Both `make testacc` and direct
 `TF_ACC=1 go test ./internal/provider` invocations default to `tofu` and
 `registry.opentofu.org/spartanworks/guix`. Set `TOFU=/absolute/path/to/tofu` to use

@@ -131,7 +131,7 @@ func TestImageProvisioningFailureRequiresManualInstallation(t *testing.T) {
 	r.Schema(t.Context(), resource.SchemaRequest{}, &response)
 	plan := tfsdk.Plan{Schema: response.Schema}
 	const secret = "PRIVATE-PAYLOAD-MARKER"
-	model := ImageModel{Name: types.StringValue("test"), Blueprint: privateBlueprint(t, types.StringValue(secret)), System: types.StringValue("x86_64-linux"), BuildTimeout: types.StringValue("1m")}
+	model := ImageModel{Name: types.StringValue("test"), Blueprint: privateBlueprint(t, types.StringValue(secret)), System: types.StringValue("x86_64-linux"), Timeouts: imageTimeoutValues(nil)}
 	if d := plan.Set(t.Context(), &model); d.HasError() {
 		t.Fatal(d)
 	}
@@ -176,7 +176,7 @@ func TestMissingExtensionFailsBeforeBuildOrContact(t *testing.T) {
 	var schema resource.SchemaResponse
 	r.Schema(t.Context(), resource.SchemaRequest{}, &schema)
 	plan := tfsdk.Plan{Schema: schema.Schema}
-	model := ImageModel{Name: types.StringValue("test"), Blueprint: privateBlueprint(t, types.StringValue("private")), System: types.StringValue("x86_64-linux"), BuildTimeout: types.StringValue("1m")}
+	model := ImageModel{Name: types.StringValue("test"), Blueprint: privateBlueprint(t, types.StringValue("private")), System: types.StringValue("x86_64-linux"), Timeouts: imageTimeoutValues(nil)}
 	if d := plan.Set(t.Context(), &model); d.HasError() {
 		t.Fatal(d)
 	}

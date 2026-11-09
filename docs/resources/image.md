@@ -3,12 +3,12 @@
 page_title: "guix_image Resource - guix"
 subcategory: ""
 description: |-
-  Build a Guix System image with pinned channels, then provision attached private files outside the store using guix secrets image. FUSE mounts are preferred; Polkit authentication is requested when FUSE is unavailable. If provisioning fails, retain the clean image and warn that the declared secrets must be installed manually before booting. Flash and boot the final artifact manually. Destroy deletes the owned private copy and releases its clean-image GC root.
+  Build a Guix System image with pinned channels, then provision attached private files outside the store using guix secrets image. FUSE mounts are preferred; Polkit authentication is requested when FUSE is unavailable. If provisioning fails, retain the clean image and warn that the declared secrets must be installed manually before booting. Input changes rebuild the image under the update deadline, retaining the previous artifact until success. Flash and boot the final artifact manually. Destroy deletes the owned private copy and releases its clean-image GC root.
 ---
 
 # guix_image (Resource)
 
-Build a Guix System image with pinned channels, then provision attached private files outside the store using guix secrets image. FUSE mounts are preferred; Polkit authentication is requested when FUSE is unavailable. If provisioning fails, retain the clean image and warn that the declared secrets must be installed manually before booting. Flash and boot the final artifact manually. Destroy deletes the owned private copy and releases its clean-image GC root.
+Build a Guix System image with pinned channels, then provision attached private files outside the store using guix secrets image. FUSE mounts are preferred; Polkit authentication is requested when FUSE is unavailable. If provisioning fails, retain the clean image and warn that the declared secrets must be installed manually before booting. Input changes rebuild the image under the update deadline, retaining the previous artifact until success. Flash and boot the final artifact manually. Destroy deletes the owned private copy and releases its clean-image GC root.
 
 ## Example Usage
 
@@ -26,6 +26,12 @@ resource "guix_image" "server" {
   blueprint  = guix_blueprint.server
   image_type = "efi-raw"
   system     = "x86_64-linux"
+
+  timeouts = {
+    create = "4h"
+    update = "4h"
+    read   = "30s"
+  }
 }
 
 # An inline expression may return an image specification. Its definition selects
@@ -59,15 +65,15 @@ resource "guix_image" "from_image_specification" {
 
 ### Optional
 
-- `build_timeout` (String) Image build deadline.
 - `image_type` (String) Guix image type for an operating-system configuration, including types exported by pinned channels. Omit to use the pinned Guix default. An image specification determines its own layout, following native Guix behavior.
-- `name` (String) Operator-visible artifact label. Images appear under artifact_directory/<name>/<id>/image while apply waits for manual boot.
+- `name` (String) Operator-visible artifact label. Images appear under artifact_directory/<name>/<id>/, with separate generations for rebuilds.
 - `system` (String) Guix native build system; defaults to x86_64-linux. Foreign-system builds require emulation or offloading. This does not request cross-compilation.
 - `target` (String) GNU target triplet for cross-compiling the image, for example aarch64-linux-gnu. Builds use the runner's native system; host system builds and deployments still use system.
+- `timeouts` (Attributes) Operation deadlines. Defaults: create 2h, update 2h, read 30s. (see [below for nested schema](#nestedatt--timeouts))
 
 ### Read-Only
 
-- `artifact_path` (String) Flashable image under artifact_directory/<name>/<id>/image. A private mode-0600 copy after secret provisioning; otherwise a symlink to the clean image. A provisioning warning means the declared secrets must be installed manually before booting.
+- `artifact_path` (String) Flashable image under artifact_directory/<name>/<id>/, with a new generation on rebuild. A private mode-0600 copy after secret provisioning; otherwise a symlink to the clean image. A provisioning warning means the declared secrets must be installed manually before booting.
 - `id` (String) Unique resource identity, owning an independent image GC root.
 - `input_digest` (String) Digest of the configuration, channels, system, cross target and source files.
 - `sha256` (String) SHA256 checksum of the image bytes.
@@ -88,3 +94,13 @@ Optional:
 - `os` (String) Scheme source evaluating to a Guix operating-system record. Supply raw source, file(), templatefile(), or an explicit (load "..."); filenames are not loaded automatically. Evaluated only by a consuming leaf that selects this specification.
 - `secrets` (String, Sensitive) Private Scheme source evaluating to a (guix secrets) secrets record. Accepts raw source, file(), templatefile(), or an explicit load expression. Evaluated by image and host consumers during apply, outside public Guix build inputs. Relative sources and load expressions use the Terraform working directory; use absolute paths for module-local files. Requires the installed guix secrets extension in the pinned channels. External file changes can trigger image replacement through terraform_data and lifecycle.replace_triggered_by; see the provider's private file provisioning documentation.
 - `source_files` (Map of String) Public supporting files keyed by normalized relative path, including Scheme modules, local assets and encrypted documents. Provider filenames are reserved.
+
+
+<a id="nestedatt--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String) Initial image build and provisioning timeout.
+- `read` (String) Artifact existence and reference check timeout. Refresh does not build or checksum the image.
+- `update` (String) Image rebuild and provisioning timeout. The previous artifact is retained until the new image is ready.

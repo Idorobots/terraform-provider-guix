@@ -11,6 +11,12 @@ resource "guix_image" "server" {
   blueprint  = guix_blueprint.server
   image_type = "efi-raw"
   system     = "x86_64-linux"
+
+  timeouts = {
+    create = "4h"
+    update = "4h"
+    read   = "30s"
+  }
 }
 
 # An inline expression may return an image specification. Its definition selects

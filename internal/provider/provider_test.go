@@ -301,6 +301,11 @@ resource "guix_image" "worker" {
 		{PreConfig: func() { backend.mu.Lock(); backend.address = "192.0.2.2"; backend.mu.Unlock() }, Config: config("v2"), Check: testresource.ComposeTestCheckFunc(testresource.TestCheckResourceAttr("guix_host.controller", "ipv4_address", "192.0.2.2"), check(3, 3))},
 		{PreConfig: func() {
 			roots, err := filepath.Glob(filepath.Join(client.ArtifactDirectory, "*", "*", "image"))
+			if err == nil {
+				var generations []string
+				generations, err = filepath.Glob(filepath.Join(client.ArtifactDirectory, "*", "*", "*", "image"))
+				roots = append(roots, generations...)
+			}
 			if err != nil || len(roots) != 1 {
 				t.Fatalf("image roots=%v err=%v", roots, err)
 			}
@@ -431,7 +436,7 @@ resource "guix_host" "server" {
 	testresource.Test(t, testresource.TestCase{ProtoV6ProviderFactories: factories(client), Steps: []testresource.TestStep{
 		{Config: config(""), Check: check("", 1, 1)},
 		{Config: config(`target = "aarch64-linux-gnu"`), ConfigPlanChecks: testresource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
-			plancheck.ExpectResourceAction("guix_image.bootstrap", plancheck.ResourceActionDestroyBeforeCreate),
+			plancheck.ExpectResourceAction("guix_image.bootstrap", plancheck.ResourceActionUpdate),
 		}}, Check: check("aarch64-linux-gnu", 2, 1)},
 		{Config: config(`target = "arm-linux-gnueabihf"`), Check: check("arm-linux-gnueabihf", 3, 1)},
 	}})
@@ -470,10 +475,10 @@ resource "guix_image" "server" {
 		{Config: config(""), Check: check("", 1)},
 		{Config: config(""), PlanOnly: true, ExpectNonEmptyPlan: false},
 		{Config: config("efi-raw"), ConfigPlanChecks: testresource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
-			plancheck.ExpectResourceAction("guix_image.server", plancheck.ResourceActionDestroyBeforeCreate),
+			plancheck.ExpectResourceAction("guix_image.server", plancheck.ResourceActionUpdate),
 		}}, Check: check("efi-raw", 2)},
 		{Config: config(""), ConfigPlanChecks: testresource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
-			plancheck.ExpectResourceAction("guix_image.server", plancheck.ResourceActionDestroyBeforeCreate),
+			plancheck.ExpectResourceAction("guix_image.server", plancheck.ResourceActionUpdate),
 		}}, Check: check("", 3)},
 	}})
 }
@@ -495,7 +500,7 @@ func TestImageRootOwnership(t *testing.T) {
 	var schemaResponse resource.SchemaResponse
 	r.Schema(t.Context(), resource.SchemaRequest{}, &schemaResponse)
 	state := tfsdk.State{Schema: schemaResponse.Schema}
-	model := ImageModel{ID: types.StringValue("11111111111111111111111111111111"), ArtifactPath: types.StringValue(first), Blueprint: testBlueprint(t), System: types.StringValue("x86_64-linux"), ImageType: types.StringValue("efi-raw"), StorePath: types.StringValue("unused"), SHA256: types.StringValue("unused"), InputDigest: types.StringValue("unused"), BuildTimeout: types.StringValue("2h")}
+	model := ImageModel{ID: types.StringValue("11111111111111111111111111111111"), ArtifactPath: types.StringValue(first), Blueprint: testBlueprint(t), System: types.StringValue("x86_64-linux"), ImageType: types.StringValue("efi-raw"), StorePath: types.StringValue("unused"), SHA256: types.StringValue("unused"), InputDigest: types.StringValue("unused"), Timeouts: imageTimeoutValues(nil)}
 	if diagnostics := state.Set(t.Context(), model); diagnostics.HasError() {
 		t.Fatal(diagnostics)
 	}

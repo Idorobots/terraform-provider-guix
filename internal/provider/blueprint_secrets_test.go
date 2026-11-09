@@ -77,7 +77,7 @@ resource "guix_host" "server" {
 		{Config: config("null")},
 		{Config: config(`"private-v1"`), Check: check("private-v1", 2, 1, 1)},
 		{Config: config(`"private-v2"`), ConfigPlanChecks: testresource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
-			plancheck.ExpectResourceAction("guix_image.server", plancheck.ResourceActionDestroyBeforeCreate),
+			plancheck.ExpectResourceAction("guix_image.server", plancheck.ResourceActionUpdate),
 		}}, Check: check("private-v2", 3, 2, 2)},
 		{Config: config(`"private-v2"`), PreConfig: func() {
 			if err := os.WriteFile(sourceFile, []byte("source-v2"), 0600); err != nil {
