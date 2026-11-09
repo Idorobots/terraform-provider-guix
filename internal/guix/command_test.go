@@ -4,6 +4,7 @@ package guix
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -87,7 +88,7 @@ func TestSubprocessStreamsInfoBeforeExit(t *testing.T) {
 func TestSubprocessLogsBeyondCaptureLimit(t *testing.T) {
 	var logs bytes.Buffer
 	ctx := tflogtest.RootLogger(t.Context(), &logs)
-	var capture limitedBuffer
+	var capture diagnosticBuffer
 	stream := &subprocessLog{ctx: ctx, command: "guix", stream: "stderr"}
 	body := strings.Repeat("x", 128*1024+1)
 	if _, err := io.MultiWriter(&capture, stream).Write([]byte(body)); err != nil {
@@ -108,6 +109,51 @@ func TestSubprocessLogsBeyondCaptureLimit(t *testing.T) {
 	}
 	if capture.Len() != 64*1024 || output.String() != body {
 		t.Fatal("capture limit truncated streamed output")
+	}
+}
+
+func TestDiagnosticBufferKeepsFinalLines(t *testing.T) {
+	for _, trailingNewline := range []bool{false, true} {
+		var body, want strings.Builder
+		body.WriteString(strings.Repeat("early output\n", 10000))
+		for i := 0; i < 25; i++ {
+			line := fmt.Sprintf("failure line %d", i)
+			if i < 24 || trailingNewline {
+				line += "\n"
+			}
+			body.WriteString(line)
+			if i >= 5 {
+				want.WriteString(line)
+			}
+		}
+		for _, chunkSize := range []int{1, 37, body.Len()} {
+			var capture diagnosticBuffer
+			data := []byte(body.String())
+			for len(data) > 0 {
+				chunk := data[:min(chunkSize, len(data))]
+				n, err := capture.Write(chunk)
+				if err != nil || n != len(chunk) {
+					t.Fatalf("write: %d, %v", n, err)
+				}
+				data = data[len(chunk):]
+			}
+			if capture.String() != want.String() {
+				t.Fatalf("chunk size %d, trailing newline %v: got %q, want %q", chunkSize, trailingNewline, capture.String(), want.String())
+			}
+		}
+	}
+}
+
+func TestSubprocessFailureDiagnosticKeepsTail(t *testing.T) {
+	_, err := run(t.Context(), ExecRunner{}, "", "sh", "-c",
+		`i=0; while [ "$i" -lt 10000 ]; do printf 'early output\n' >&2; i=$((i+1)); done; i=0; while [ "$i" -lt 20 ]; do printf 'final %s\n' "$i" >&2; i=$((i+1)); done; exit 7`)
+	var want strings.Builder
+	want.WriteString("sh: exit status 7: ")
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&want, "final %d\n", i)
+	}
+	if err == nil || err.Error() != want.String() {
+		t.Fatalf("unexpected diagnostic: %v", err)
 	}
 }
 

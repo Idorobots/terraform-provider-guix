@@ -24,6 +24,33 @@ type ExecRunner struct{}
 
 type limitedBuffer struct{ bytes.Buffer }
 
+// diagnosticBuffer retains the last 20 lines, bounded to 64 KiB even when a
+// subprocess emits a very long line. Stdout uses limitedBuffer independently.
+type diagnosticBuffer struct{ bytes.Buffer }
+
+func (b *diagnosticBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	const limit = 64 * 1024
+	if len(p) >= limit {
+		b.Reset()
+		p = p[len(p)-limit:]
+	} else if excess := b.Len() + len(p) - limit; excess > 0 {
+		b.Next(excess)
+	}
+	_, _ = b.Buffer.Write(p)
+	body := b.Bytes()
+	lines := bytes.Count(body, []byte{'\n'})
+	if len(body) > 0 && body[len(body)-1] != '\n' {
+		lines++
+	}
+	for lines > 20 {
+		end := bytes.IndexByte(b.Bytes(), '\n')
+		b.Next(end + 1)
+		lines--
+	}
+	return n, nil
+}
+
 func (b *limitedBuffer) Write(p []byte) (int, error) {
 	n := len(p)
 	if remaining := 64*1024 - b.Len(); remaining > 0 {
@@ -92,7 +119,8 @@ func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) (st
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	cmd.WaitDelay = 7 * time.Second
-	var out, stderr limitedBuffer
+	var out limitedBuffer
+	var stderr diagnosticBuffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	if !slices.Contains(args, "secrets") || slices.Contains(args, "--help") {
 		// Private Scheme evaluated by guix secrets may print sensitive contents.
