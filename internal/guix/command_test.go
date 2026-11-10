@@ -101,7 +101,7 @@ func TestSubprocessLogsBeyondCaptureLimit(t *testing.T) {
 	}
 	var output strings.Builder
 	for _, entry := range entries {
-		line := entry["@message"].(string)
+		line, _ := entry["@message"].(string)
 		if len(line) > 64*1024 || entry["@level"] != "info" {
 			t.Fatal("unbounded or non-INFO subprocess log")
 		}
